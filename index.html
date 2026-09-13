@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>SCRPG</title>
+
+<!-- PWA : installable ("Ajouter à l'écran d'accueil"), icône, lancement plein écran, hors-ligne
+     après premier chargement (voir sw.js). -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#10151a">
+<link rel="icon" href="icons/icon-192.png">
+<!-- iOS ignore manifest.json pour l'installation : ces balises sont le seul moyen d'obtenir un
+     lancement plein écran (sans Safari) et une icône correcte sur Safari/iOS. -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="SCRPG">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background: #10151a;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+    overscroll-behavior: none;
+    -webkit-text-size-adjust: 100%;
+  }
+  #game-container {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #e8e8e8;
+    font-family: sans-serif;
+    font-size: 12vw;
+    font-weight: bold;
+    letter-spacing: 0.05em;
+  }
+</style>
+</head>
+<body>
+  <div id="game-container">SCRPG</div>
+
+  <script src="js/version.js"></script>
+
+  <!-- Enregistrement du service worker (voir sw.js) : silencieux si indisponible (ex. chargé
+       depuis file:// ou un navigateur trop ancien), le jeu marche identiquement sans lui. -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('sw.js').catch(() => {});
+      });
+    }
+  </script>
+</body>
+</html>

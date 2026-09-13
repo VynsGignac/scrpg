@@ -1,0 +1,21 @@
+# Dépendances npm (Capacitor/CLI) — réinstallées via `npm install`, voir package.json
+node_modules/
+
+# Projet Android généré par Capacitor (`npx cap add android`, voir build-apk.ps1) — régénérable,
+# pas besoin de le versionner.
+android/
+
+# Dossier de synchronisation Capacitor (copie de index.html/js/icons pour l'APK) — régénéré à
+# chaque build, voir build-apk.ps1.
+www/
+
+# Image source utilisée pour générer les icônes de l'app — pas nécessaire au jeu lui-même.
+assets-src/
+
+# APK compilée — régénérable via build-apk.ps1, ne se prête pas bien à git (gros binaire qui
+# change entièrement à chaque build).
+*.apk
+
+# URL du webhook Discord (voir discord-bot/send-apk.js) : équivaut à un mot de passe (quiconque la
+# possède peut poster dans le salon), jamais à commiter.
+discord-bot/webhook-url.txt

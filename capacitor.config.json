@@ -1,0 +1,8 @@
+{
+  "appId": "com.scrpg.game",
+  "appName": "SCRPG",
+  "webDir": "www",
+  "android": {
+    "webContentsDebuggingEnabled": true
+  }
+}
