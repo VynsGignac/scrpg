@@ -223,10 +223,56 @@ function updateBossAI(boss, now) {
   startMove(boss, target.x + dirX * nudge, target.y + dirY * nudge);
 }
 
+function nearestEnemyTo(character) {
+  let nearest = null;
+  let nearestDist = Infinity;
+  for (const enemy of enemies) {
+    if (enemy.hp <= 0) continue;
+    const dist = Math.hypot(character.x - enemy.x, character.y - enemy.y);
+    if (dist < nearestDist) {
+      nearestDist = dist;
+      nearest = enemy;
+    }
+  }
+  return nearest;
+}
+
+// "Jouent tout seuls" : un personnage NON sélectionné cherche activement l'ennemi le plus proche,
+// s'approche pour l'attaquer (voir orderAttack, qui gère le déplacement) et utilise ses
+// compétences dès qu'elles sont prêtes. Dès que le joueur le sélectionne, cette fonction ne fait
+// plus rien pour lui -- il reprend uniquement les ordres du joueur (voir pointerup), plus la
+// riposte passive sans déplacement gérée au début de updateCombat ci-dessous, commune à tous.
+function updateAutoPlay(character) {
+  if (character.selected) return;
+
+  const target = nearestEnemyTo(character);
+  if (!target) return;
+
+  // Nouvel engagement, ou cible déjà fixée mais hors de portée après être arrivé (elle a bougé
+  // entre-temps) : (re)lance un ordre d'attaque, qui se charge lui-même de l'approche.
+  if (character.attackTarget !== target || (!character.isMoving && !isInRangeOf(character, target))) {
+    orderAttack(character, target);
+  }
+
+  for (const skillId of CLASS_SKILLS[character.className] || []) {
+    castSkill(character, skillId);
+  }
+}
+
 // Inflige des dégâts périodiques à la cible tant que le personnage est arrivé à portée (melee :
 // juste à côté, distance : dans RANGED_ATTACK_RANGE) -- "arrivé" = plus en train de se déplacer,
 // pas besoin de revérifier la distance puisque orderAttack a déjà choisi une destination valide.
 function updateCombat(character, now) {
+  // Riposte passive, sans déplacement : un personnage du joueur sans cible qui a déjà un ennemi
+  // à portée l'attaque sans qu'un ordre explicite soit nécessaire -- qu'il soit sélectionné ou
+  // non (la poursuite ACTIVE, avec déplacement, reste elle réservée aux non-sélectionnés, voir
+  // updateAutoPlay). Une cible existante n'est jamais remplacée ici : "tant qu'une autre cible
+  // n'a pas été définie" (ordre explicite du joueur, ou updateAutoPlay).
+  if (character.playerControlled && !character.attackTarget) {
+    const candidate = nearestEnemyTo(character);
+    if (candidate && isInRangeOf(character, candidate)) character.attackTarget = candidate;
+  }
+
   const target = character.attackTarget;
   if (!target) return;
   if (target.hp <= 0) {
@@ -1304,6 +1350,9 @@ function loop(now) {
   lastFrameTime = now;
 
   for (const enemy of enemies) updateBossAI(enemy, now);
+  for (const character of characters) {
+    if (character.playerControlled) updateAutoPlay(character);
+  }
   for (const character of characters) updateMove(character, dt);
   resolveOverlaps();
   for (const character of characters) {
