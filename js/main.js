@@ -33,17 +33,17 @@ window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 
 // Bandeau de navigation en haut de l'écran, toujours visible quelle que soit la scène active :
-// un bouton par scène. Pour l'instant seule "Combat" a un vrai contenu (le prototype de
-// déplacement/collision ci-dessous) ; les autres sont de simples pages vides en attendant.
+// un bouton par scène. "Combat" n'y figure plus (demande utilisateur explicite) : on y arrive
+// uniquement en cliquant un rond de la carte du Monde (voir enterCombatLevel) -- currentScene
+// peut donc valoir 'combat' sans qu'aucun bouton du bandeau n'y corresponde.
 const TOP_BANNER_HEIGHT = 56;
 const SCENES = [
-  { key: 'combat', label: 'Combat' },
   { key: 'joueur', label: 'Joueur' },
   { key: 'personnage', label: 'Personnage' },
   { key: 'guilde', label: 'Guilde' },
   { key: 'monde', label: 'Monde' },
 ];
-let currentScene = 'combat';
+let currentScene = 'monde';
 
 const CHARACTER_SIZE = 48;
 const ENEMY_SIZE = 72;
@@ -171,11 +171,18 @@ const PARTY_SIZE = 4;
 const SLOT_SPACING = 100;
 const squareXs = Array.from({ length: PARTY_SIZE }, (_, i) => cx + (i - (PARTY_SIZE - 1) / 2) * SLOT_SPACING);
 
+// Socle de mana commun à tout le monde, même à 0 en Savoir (Voleur/Chasseur/Mage/Pyromane/
+// Sorcier) -- sans ça, ces classes ne pourraient plus jamais lancer AUCUNE compétence dès que
+// celles-ci coûtent du mana (demande utilisateur explicite), puisque Savoir est maintenant
+// carrément à 0 pour elles (voir CLASS_STATS). Savoir continue d'augmenter le mana au-delà de ce
+// socle, donc reste bien la caractéristique de ceux qui lancent beaucoup de sorts (soin surtout).
+const BASE_MANA = 50;
+
 const roster = CHARACTER_CLASSES.map((className, i) => {
   const stats = statsForClass(className);
-  // PV = Endurance x10, Mana = Savoir x10 (demande utilisateur explicite).
+  // PV = Endurance x10 (demande utilisateur explicite).
   const hpMax = stats.endurance * 10;
-  const manaMax = stats.savoir * 10;
+  const manaMax = BASE_MANA + stats.savoir * 10;
   return {
     rosterId: i, // identité stable dans le roster, indépendante de l'emplacement de combat occupé
     x: cx, y: cy, size: CHARACTER_SIZE, color: CLASS_COLORS[className] || '#4fc3f7',
@@ -1347,6 +1354,18 @@ function isInRangeOf(character, target) {
   return combat.melee ? dist <= avoidHalfExtent(character, target) + 20 : dist <= RANGED_ATTACK_RANGE + 20;
 }
 
+// Coût en mana : le même pour tous les sorts (demande utilisateur explicite, même principe que
+// SKILL_COOLDOWN_MS déjà commun à tous). Régénération passive plus bas (voir updateManaRegen).
+const SKILL_MANA_COST = 20;
+const MANA_REGEN_PER_SEC = 2; // socle commun
+const MANA_REGEN_PER_SAVOIR = 0.3; // + bonus selon le Savoir (les soigneurs récupèrent plus vite)
+
+function updateManaRegen(character, dt) {
+  if (!character.playerControlled || character.hp <= 0 || character.mana >= character.manaMax) return;
+  const perSecond = MANA_REGEN_PER_SEC + (character.stats.savoir || 0) * MANA_REGEN_PER_SAVOIR;
+  character.mana = Math.min(character.manaMax, character.mana + (perSecond * dt) / 1000);
+}
+
 // Renvoie true si le sort a réellement été lancé (utilisé par updateAutoPlay pour respecter le
 // délai d'1s entre deux compétences de l'IA -- voir AUTO_ABILITY_INTERVAL_MS).
 function castSkill(character, skillId) {
@@ -1357,6 +1376,7 @@ function castSkill(character, skillId) {
   const now = performance.now();
   const readyAt = (character.cooldowns && character.cooldowns[skillId]) || 0;
   if (now < readyAt) return false;
+  if ((character.mana || 0) < SKILL_MANA_COST) return false;
 
   if (skill.targeting === 'enemy') {
     const target = enemies[0];
@@ -1366,6 +1386,7 @@ function castSkill(character, skillId) {
     skill.cast(character);
   }
 
+  character.mana -= SKILL_MANA_COST;
   if (!character.cooldowns) character.cooldowns = {};
   character.cooldowns[skillId] = now + skill.cooldownMs;
   return true;
@@ -2736,12 +2757,65 @@ function toggleGuildMembership(character) {
   }
 }
 
-// Scène "Guilde" : choisit lesquels des 11 personnages du roster (4 au maximum) partent en
-// donjon -- demande utilisateur explicite. Un tap sur une ligne bascule son appartenance au groupe.
-function drawGuildeScene() {
+// La scène "Guilde" a 3 sous-onglets (demande utilisateur explicite) : la sélection du roster
+// est pleinement fonctionnelle ; "Gestion des comptes" et "Stratégie d'équipe" sont pour
+// l'instant de simples espaces réservés, comme l'ont été les scènes principales avant d'avoir
+// chacune leur tour un vrai contenu.
+const GUILDE_SUB_TABS = [
+  { key: 'roster', label: 'Sélection roster' },
+  { key: 'comptes', label: 'Gestion des comptes' },
+  { key: 'strategie', label: "Stratégie d'équipe" },
+];
+let guildeSubTab = 'roster';
+const GUILDE_SUB_TAB_HEIGHT = 40;
+
+function guildeSubTabRects() {
+  const tabWidth = canvas.width / GUILDE_SUB_TABS.length;
+  return GUILDE_SUB_TABS.map((tab, i) => ({
+    tab: tab.key, label: tab.label, x: i * tabWidth, y: TOP_BANNER_HEIGHT, width: tabWidth, height: GUILDE_SUB_TAB_HEIGHT,
+  }));
+}
+
+function drawGuildeSubTabs() {
+  const rects = guildeSubTabRects();
+  const fontSize = fittingFontSize(GUILDE_SUB_TABS.map((t) => t.label), rects[0].width - 8, 12, 8);
+
+  ctx.fillStyle = '#ffffff0a';
+  ctx.fillRect(0, TOP_BANNER_HEIGHT, canvas.width, GUILDE_SUB_TAB_HEIGHT);
+  ctx.strokeStyle = '#ffffff22';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, TOP_BANNER_HEIGHT + GUILDE_SUB_TAB_HEIGHT);
+  ctx.lineTo(canvas.width, TOP_BANNER_HEIGHT + GUILDE_SUB_TAB_HEIGHT);
+  ctx.stroke();
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (const rect of rects) {
+    const active = rect.tab === guildeSubTab;
+    if (active) {
+      ctx.fillStyle = '#ffd54f1a';
+      ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+      ctx.strokeStyle = '#ffd54f';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(rect.x, rect.y + rect.height - 1);
+      ctx.lineTo(rect.x + rect.width, rect.y + rect.height - 1);
+      ctx.stroke();
+    }
+    ctx.font = active ? `bold ${fontSize}px sans-serif` : `${fontSize}px sans-serif`;
+    ctx.fillStyle = active ? '#ffd54f' : '#ffffffaa';
+    ctx.fillText(rect.label, rect.x + rect.width / 2, rect.y + rect.height / 2 + 1);
+    registerHitRect(rect.x, rect.y, rect.width, rect.height, () => { guildeSubTab = rect.tab; });
+  }
+}
+
+// Sous-onglet "Sélection roster" : choisit lesquels des 11 personnages du roster (4 au maximum)
+// partent en donjon. Un tap sur une ligne bascule son appartenance au groupe.
+function drawGuildeRosterTab() {
   const cardX = LIST_PADDING_X;
   const cardWidth = canvas.width - LIST_PADDING_X * 2;
-  let y = TOP_BANNER_HEIGHT + 16;
+  let y = TOP_BANNER_HEIGHT + GUILDE_SUB_TAB_HEIGHT + 16;
 
   ctx.textAlign = 'left';
   ctx.textBaseline = 'alphabetic';
@@ -2783,6 +2857,28 @@ function drawGuildeScene() {
     registerHitRect(cardX, y, cardWidth, rowHeight, () => toggleGuildMembership(character));
 
     y += rowHeight + 6;
+  }
+}
+
+// Sous-onglets pas encore implémentés : simple espace réservé, comme les scènes principales
+// avant d'avoir leur tour un vrai contenu.
+function drawGuildePlaceholderTab(label) {
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = 'bold 22px sans-serif';
+  ctx.fillStyle = '#ffffff55';
+  const top = TOP_BANNER_HEIGHT + GUILDE_SUB_TAB_HEIGHT;
+  ctx.fillText(label, canvas.width / 2, top + (canvas.height - top) / 2);
+}
+
+function drawGuildeScene() {
+  drawGuildeSubTabs();
+  if (guildeSubTab === 'roster') {
+    drawGuildeRosterTab();
+  } else if (guildeSubTab === 'comptes') {
+    drawGuildePlaceholderTab('Gestion des comptes');
+  } else {
+    drawGuildePlaceholderTab("Stratégie d'équipe");
   }
 }
 
@@ -2952,6 +3048,7 @@ function loop(now) {
     updateCombat(character, now);
     updateDotEffects(character, now);
     updateShield(character, now);
+    updateManaRegen(character, dt);
   }
   updateFloatingTexts(now);
   checkCombatOutcome();
