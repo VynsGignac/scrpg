@@ -334,11 +334,22 @@ function nearestEnemyTo(character) {
   return nearest;
 }
 
+// Sorts défensifs (protègent/renforcent soi-même en réaction à une attaque) : l'IA ne les lance
+// que si le personnage a réellement subi des dégâts récemment (voir AUTO_DEFENSIVE_WINDOW_MS) --
+// pas juste "au cas où", pour éviter de les gâcher hors de propos. Lumière divine (soin) n'en
+// fait volontairement pas partie : le besoin de soin dépend de l'état du groupe, pas seulement du
+// lanceur, et est déjà évalué correctement par lowestHpAlly.
+const AUTO_DEFENSIVE_SKILLS = new Set(['murSacre', 'formeDOmbre', 'dephasage']);
+const AUTO_DEFENSIVE_WINDOW_MS = 4000;
+const AUTO_ABILITY_INTERVAL_MS = 1000; // délai mini entre deux compétences lancées par l'IA
+
 // "Jouent tout seuls" : un personnage NON sélectionné cherche activement l'ennemi le plus proche,
 // s'approche pour l'attaquer (voir orderAttack, qui gère le déplacement) et utilise ses
-// compétences dès qu'elles sont prêtes. Dès que le joueur le sélectionne, cette fonction ne fait
-// plus rien pour lui -- il reprend uniquement les ordres du joueur (voir pointerup), plus la
-// riposte passive sans déplacement gérée au début de updateCombat ci-dessous, commune à tous.
+// compétences dès qu'elles sont prêtes (avec un délai mini d'1s entre deux, et les sorts
+// défensifs réservés au cas où il vient d'être touché -- voir plus haut). Dès que le joueur le
+// sélectionne, cette fonction ne fait plus rien pour lui -- il reprend uniquement les ordres du
+// joueur (voir pointerup), plus la riposte passive sans déplacement gérée au début de
+// updateCombat ci-dessous, commune à tous.
 function updateAutoPlay(character) {
   if (character.selected || character.hp <= 0 || combatPhase !== 'active') return;
 
@@ -351,8 +362,16 @@ function updateAutoPlay(character) {
     orderAttack(character, target);
   }
 
+  const now = performance.now();
+  if (now - (character.lastAutoSkillAt || 0) < AUTO_ABILITY_INTERVAL_MS) return;
+
+  const recentlyHit = now - (character.lastDamageTakenAt || 0) <= AUTO_DEFENSIVE_WINDOW_MS;
   for (const skillId of CLASS_SKILLS[character.className] || []) {
-    castSkill(character, skillId);
+    if (AUTO_DEFENSIVE_SKILLS.has(skillId) && !recentlyHit) continue;
+    if (castSkill(character, skillId)) {
+      character.lastAutoSkillAt = now;
+      break; // un seul sort par image, pour laisser le délai d'1s s'écouler avant le suivant
+    }
   }
 }
 
@@ -459,6 +478,8 @@ function dealDamage(target, amount, rgb, source) {
   }
   target.hp = Math.max(0, target.hp - remaining);
   spawnFloatingText(target.x + (Math.random() - 0.5) * 24, target.y - target.size / 2 - 34, `-${amount}`, rgb);
+  // Sert à l'IA pour savoir si elle vient de se faire attaquer (voir AUTO_DEFENSIVE_SKILLS).
+  if (target.playerControlled) target.lastDamageTakenAt = now;
 
   if (!target.playerControlled && source && source.playerControlled) {
     addThreat(source, amount, now); // le joueur inflige des dégâts à l'ennemi
@@ -631,18 +652,20 @@ function isInRangeOf(character, target) {
   return combat.melee ? dist <= avoidHalfExtent(character, target) + 20 : dist <= RANGED_ATTACK_RANGE + 20;
 }
 
+// Renvoie true si le sort a réellement été lancé (utilisé par updateAutoPlay pour respecter le
+// délai d'1s entre deux compétences de l'IA -- voir AUTO_ABILITY_INTERVAL_MS).
 function castSkill(character, skillId) {
-  if (character.hp <= 0 || combatPhase === 'prePull') return; // mort, ou pull pas encore lancé
+  if (character.hp <= 0 || combatPhase === 'prePull') return false; // mort, ou pull pas encore lancé
   const skill = SKILLS[skillId];
-  if (!skill) return;
+  if (!skill) return false;
 
   const now = performance.now();
   const readyAt = (character.cooldowns && character.cooldowns[skillId]) || 0;
-  if (now < readyAt) return;
+  if (now < readyAt) return false;
 
   if (skill.targeting === 'enemy') {
     const target = enemies[0];
-    if (!target || target.hp <= 0 || !isInRangeOf(character, target)) return;
+    if (!target || target.hp <= 0 || !isInRangeOf(character, target)) return false;
     skill.cast(character, target);
   } else {
     skill.cast(character);
@@ -650,6 +673,7 @@ function castSkill(character, skillId) {
 
   if (!character.cooldowns) character.cooldowns = {};
   character.cooldowns[skillId] = now + skill.cooldownMs;
+  return true;
 }
 
 // Avance le personnage d'au plus PIXELS_PER_MS * dt le long de son chemin restant. Base sur un
@@ -1093,6 +1117,28 @@ function drawCharacter(character) {
     ctx.fillStyle = '#ffffff';
     ctx.fillText(character.label, character.x, character.y + 1);
   }
+}
+
+// PV puis mana, sous le personnage -- toujours visibles (contrairement au détail complet du
+// bandeau de sélection, qui lui n'apparaît que pour le personnage sélectionné).
+function drawCharacterBars(character) {
+  if (character.hp <= 0) return; // rien à montrer sur un cadavre (déjà la croix rouge)
+  const half = character.size / 2;
+  const barWidth = character.size * 1.1;
+  const barHeight = 5;
+  const barX = character.x - barWidth / 2;
+  let barY = character.y + half + 4;
+
+  ctx.fillStyle = '#3a1216';
+  ctx.fillRect(barX, barY, barWidth, barHeight);
+  ctx.fillStyle = '#ef5350';
+  ctx.fillRect(barX, barY, barWidth * (character.hp / character.hpMax), barHeight);
+
+  barY += barHeight + 2;
+  ctx.fillStyle = '#122236';
+  ctx.fillRect(barX, barY, barWidth, barHeight);
+  ctx.fillStyle = '#42a5f5';
+  ctx.fillRect(barX, barY, barWidth * (character.mana / character.manaMax), barHeight);
 }
 
 // Barre de vie flottant au-dessus d'un ennemi (le boss) -- toujours visible, contrairement au
@@ -1655,6 +1701,8 @@ function resetCombatEncounter(levelIndex) {
     character.dodgeChance = 0;
     character.dodgeUntil = 0;
     character.phaseUntil = 0;
+    character.lastDamageTakenAt = 0;
+    character.lastAutoSkillAt = 0;
     character.isMoving = false;
     character.pathPoints = [];
     character.selected = false;
@@ -1759,6 +1807,9 @@ function draw() {
 
   if (currentScene === 'combat') {
     for (const character of characters) drawCharacter(character);
+    for (const character of characters) {
+      if (character.playerControlled) drawCharacterBars(character);
+    }
     for (const enemy of enemies) drawEnemyHealthBar(enemy);
 
     // Trait pointillé de l'ennemi vers sa cible (voir updateEnemyAI) -- juste pour que le joueur
