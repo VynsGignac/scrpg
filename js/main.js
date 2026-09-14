@@ -169,7 +169,7 @@ const CLASS_COMBAT = {
 };
 const DEFAULT_COMBAT = { melee: true, stat: 'force' };
 const RANGED_ATTACK_RANGE = 220;
-const ATTACK_INTERVAL_MS = 1200;
+const ATTACK_INTERVAL_MS = 2000;
 
 function combatProfile(character) {
   return CLASS_COMBAT[character.className] || DEFAULT_COMBAT;
@@ -393,9 +393,11 @@ function lowestHpAlly() {
   return players_.reduce((worst, c) => (c.hp / c.hpMax < worst.hp / worst.hpMax ? c : worst));
 }
 
+const SKILL_COOLDOWN_MS = 20000; // même recharge pour tous les sorts, demande utilisateur explicite
+
 const SKILLS = {
   bouleDeFeu: {
-    id: 'bouleDeFeu', name: 'Boule de feu', shortLabel: 'Boule\nde feu', targeting: 'enemy', cooldownMs: 4000,
+    id: 'bouleDeFeu', name: 'Boule de feu', shortLabel: 'Boule\nde feu', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character, target) {
       const damage = 10 + Math.round(character.stats.intelligence * 0.8);
       dealDamage(target, damage, '255, 112, 67');
@@ -406,7 +408,7 @@ const SKILLS = {
     },
   },
   traitDeGivre: {
-    id: 'traitDeGivre', name: 'Trait de givre', shortLabel: 'Trait de\ngivre', targeting: 'enemy', cooldownMs: 3000,
+    id: 'traitDeGivre', name: 'Trait de givre', shortLabel: 'Trait de\ngivre', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character, target) {
       const damage = 8 + Math.round(character.stats.intelligence * 0.6);
       dealDamage(target, damage, '79, 195, 247');
@@ -417,7 +419,7 @@ const SKILLS = {
     },
   },
   coupSournois: {
-    id: 'coupSournois', name: 'Coup sournois', shortLabel: 'Coup\nsournois', targeting: 'enemy', cooldownMs: 3000,
+    id: 'coupSournois', name: 'Coup sournois', shortLabel: 'Coup\nsournois', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character, target) {
       const base = 8 + Math.round(character.stats.agilite * 0.8);
       const damage = isBehind(character, target) ? base * 2 : base;
@@ -425,7 +427,7 @@ const SKILLS = {
     },
   },
   surinage: {
-    id: 'surinage', name: 'Surinage', shortLabel: 'Surinage', targeting: 'enemy', cooldownMs: 3500,
+    id: 'surinage', name: 'Surinage', shortLabel: 'Surinage', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character, target) {
       const damage = 6 + Math.round(character.stats.agilite * 0.5);
       dealDamage(target, damage, '229, 57, 53');
@@ -436,14 +438,14 @@ const SKILLS = {
     },
   },
   lumiereDivine: {
-    id: 'lumiereDivine', name: 'Lumière divine', shortLabel: 'Lumière\ndivine', targeting: 'ally', cooldownMs: 6000,
+    id: 'lumiereDivine', name: 'Lumière divine', shortLabel: 'Lumière\ndivine', targeting: 'ally', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character) {
       const heal = 15 + Math.round(character.stats.savoir * 0.6);
       healCharacter(lowestHpAlly() || character, heal);
     },
   },
   murSacre: {
-    id: 'murSacre', name: 'Mur sacré', shortLabel: 'Mur\nsacré', targeting: 'self', cooldownMs: 8000,
+    id: 'murSacre', name: 'Mur sacré', shortLabel: 'Mur\nsacré', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character) {
       const shield = 20 + Math.round(character.stats.force * 1.2);
       character.shieldHp = shield;
