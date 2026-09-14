@@ -125,14 +125,16 @@ for (let i = 0; i < 3; i++) {
   });
 }
 
-// Boss : plus gros, pas contrôlable par le joueur, reste fixe à sa position de départ (voir
-// premier combat) et a une barre de vie (voir drawEnemyHealthBar).
+// Boss : plus gros, pas contrôlable par le joueur, a une barre de vie (voir drawEnemyHealthBar).
+// Choisit un personnage au hasard à sa première action et le poursuit/attaque pendant tout le
+// combat (voir updateBossAI) -- ne change jamais de cible.
 const BOSS_HP_MAX = 200;
 const bossSpawn = clampPointToField({ size: ENEMY_SIZE }, cx, cy - 220);
 characters.push({
   x: bossSpawn.x, y: bossSpawn.y, size: ENEMY_SIZE, color: '#c62828', selected: false, isMoving: false,
   playerControlled: false, hp: BOSS_HP_MAX, hpMax: BOSS_HP_MAX,
   facingAngle: Math.PI / 2, // tourné vers le bas (zone de départ des personnages) -- voir Coup sournois
+  stats: { force: 24 }, // seule stat nécessaire : reprend le calcul de dégâts générique (updateCombat)
 });
 
 const enemies = characters.filter((c) => !c.playerControlled);
@@ -197,6 +199,28 @@ function orderAttack(character, enemy) {
     startMove(character, enemy.x + dirX * RANGED_ATTACK_RANGE, enemy.y + dirY * RANGED_ATTACK_RANGE);
   }
   // Sinon déjà à portée : pas de déplacement, l'attaque commence sur place (voir updateCombat).
+}
+
+// IA du boss : choisit un personnage au hasard dès sa première évaluation et le garde comme
+// cible pour tout le combat (jamais de changement de cible tant qu'il est vivant). Marche vers
+// lui (corps à corps, comme un personnage sans sort à distance) tant qu'il n'est pas à portée --
+// comme la cible peut elle-même se déplacer entre-temps, le boss recalcule sa route à chaque
+// fois qu'il arrive quelque part sans être encore à portée, plutôt qu'une seule fois au départ.
+function updateBossAI(boss, now) {
+  if (!boss.attackTarget) {
+    const alivePlayers = characters.filter((c) => c.playerControlled && c.hp > 0);
+    if (alivePlayers.length === 0) return;
+    boss.attackTarget = alivePlayers[Math.floor(Math.random() * alivePlayers.length)];
+  }
+
+  const target = boss.attackTarget;
+  if (boss.isMoving || isInRangeOf(boss, target)) return;
+
+  const dist = Math.hypot(boss.x - target.x, boss.y - target.y) || 1;
+  const dirX = (boss.x - target.x) / dist;
+  const dirY = (boss.y - target.y) / dist;
+  const nudge = Math.min(target.size / 2 - 1, 20);
+  startMove(boss, target.x + dirX * nudge, target.y + dirY * nudge);
 }
 
 // Inflige des dégâts périodiques à la cible tant que le personnage est arrivé à portée (melee :
@@ -1201,6 +1225,21 @@ function draw() {
     for (const character of characters) drawCharacter(character);
     for (const enemy of enemies) drawEnemyHealthBar(enemy);
 
+    // Trait pointillé du boss vers sa cible (voir updateBossAI) -- juste pour que le joueur
+    // comprenne qui il poursuit, ne pilote aucune logique.
+    for (const enemy of enemies) {
+      if (!enemy.attackTarget || enemy.attackTarget.hp <= 0) continue;
+      ctx.save();
+      ctx.setLineDash([6, 5]);
+      ctx.strokeStyle = '#ff525299';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(enemy.x, enemy.y);
+      ctx.lineTo(enemy.attackTarget.x, enemy.attackTarget.y);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     // Pendant un drag : soit on survole un ennemi (ordre d'attaque, voir pointermove) et on
     // l'entoure en rouge pour indiquer clairement la cible, soit trajet de déplacement habituel
     // (avec détours éventuels) jusqu'à la destination ajustée, et rond (plus épais que le trait)
@@ -1264,10 +1303,11 @@ function loop(now) {
   const dt = Math.min(now - lastFrameTime, 100);
   lastFrameTime = now;
 
+  for (const enemy of enemies) updateBossAI(enemy, now);
   for (const character of characters) updateMove(character, dt);
   resolveOverlaps();
   for (const character of characters) {
-    if (character.playerControlled) updateCombat(character, now);
+    updateCombat(character, now);
     updateDotEffects(character, now);
     updateShield(character, now);
   }
