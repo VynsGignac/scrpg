@@ -173,6 +173,12 @@ characters.push({
 
 const enemies = characters.filter((c) => !c.playerControlled);
 
+// Statistiques du combat en cours (voir écran de fin, drawCombatEndScreen) -- initialisées tout
+// de suite (pas seulement dans enterCombatLevel) pour que les dégâts soient comptés même si le
+// joueur va directement dans l'onglet Combat sans passer par la carte du Monde en premier.
+let combatStats = createCombatStats();
+let expandedStatsCharacter = null; // personnage dont le détail est déplié sur l'écran de fin
+
 const PIXELS_PER_MS = 0.09; // vitesse de déplacement des personnages (constante sur tout le trajet)
 
 // Lance un déplacement vers (rawX, rawY), en ajustant la destination et en calculant un chemin
@@ -470,17 +476,44 @@ function drawFloatingTexts(now) {
 // pour l'instant, le boss, donc les sorts offensifs le visent automatiquement s'il est à portée).
 // ------------------------------------------------------------
 
+// ------------------------------------------------------------
+// Statistiques du combat en cours (voir écran de fin, drawCombatEndScreen) : dégâts infligés et
+// subis par personnage, ventilés par compétence (ou "Attaque de base") et par ennemi. Remis à
+// zéro à chaque nouveau combat (voir resetCombatEncounter).
+// ------------------------------------------------------------
+function createCombatStats() {
+  const stats = {};
+  for (const character of characters) {
+    if (!character.playerControlled) continue;
+    stats[character.index] = {
+      dealt: { total: 0, bySkill: {}, byEnemy: {} },
+      taken: { total: 0, bySkill: {}, byEnemy: {} },
+    };
+  }
+  return stats;
+}
+
+function recordDamageStat(characterIndex, kind, amount, skillLabel, enemyLabel) {
+  const entry = combatStats[characterIndex] && combatStats[characterIndex][kind];
+  if (!entry) return;
+  const skill = skillLabel || 'Attaque de base';
+  entry.total += amount;
+  entry.bySkill[skill] = (entry.bySkill[skill] || 0) + amount;
+  entry.byEnemy[enemyLabel] = (entry.byEnemy[enemyLabel] || 0) + amount;
+}
+
 // Inflige des dégâts à "target" en consommant d'abord son éventuel bouclier (voir Mur sacré),
 // puis affiche le nombre flottant correspondant. Le moindre dégât reçu par un ennemi démarre le
 // combat pour de bon, même pendant le compte à rebours du pull (voir combatPhase en tête de
 // fichier). Génère aussi de la menace (voir plus haut) : pour l'attaquant s'il tape un ennemi,
 // pour la cible elle-même si c'est un ennemi qui la frappe -- "source" est facultatif (ex. les
 // dégâts environnementaux n'en génèrent pas). "isCrit" ne change que l'affichage (le montant est
-// déjà calculé par l'appelant, voir computeStatDamage). Renvoie true si le coup a bien porté,
-// false s'il a été complètement évité (Déphasage/Forme d'ombre/esquive d'Agilité) -- les sorts
-// qui posent un effet secondaire (brûlure, ralentissement...) doivent vérifier ce retour avant
-// de l'appliquer.
-function dealDamage(target, amount, rgb, source, isCrit) {
+// déjà calculé par l'appelant, voir computeStatDamage). "skillLabel" (nom affiché du sort, ou
+// "Attaque de base") sert au résumé de fin de combat (voir recordDamageStat/drawCombatEndScreen).
+// Renvoie true si le coup a bien porté, false s'il a été complètement évité (Déphasage/Forme
+// d'ombre/esquive d'Agilité) -- les sorts qui posent un effet secondaire (brûlure,
+// ralentissement...) doivent vérifier ce retour avant de l'appliquer.
+function dealDamage(target, amount, rgb, source, isCrit, skillLabel) {
   const now = performance.now();
 
   // Déphasage (Mage) : insensible à tout dégât, et ne peut plus non plus en infliger tant que
@@ -517,8 +550,10 @@ function dealDamage(target, amount, rgb, source, isCrit) {
 
   if (!target.playerControlled && source && source.playerControlled) {
     addThreat(source, amount, now); // le joueur inflige des dégâts à l'ennemi
+    recordDamageStat(source.index, 'dealt', amount, skillLabel, target.name || 'Ennemi');
   } else if (target.playerControlled && source && !source.playerControlled) {
     addThreat(target, amount, now); // le joueur subit des dégâts de l'ennemi
+    recordDamageStat(target.index, 'taken', amount, skillLabel, source.name || 'Ennemi');
   }
   return true;
 }
@@ -559,7 +594,7 @@ function updateDotEffects(character, now) {
   for (let i = character.dotEffects.length - 1; i >= 0; i--) {
     const dot = character.dotEffects[i];
     if (now >= dot.nextTickAt) {
-      dealDamage(character, dot.damagePerTick, dot.rgb, dot.source);
+      dealDamage(character, dot.damagePerTick, dot.rgb, dot.source, false, dot.skillName);
       dot.ticksLeft -= 1;
       dot.nextTickAt = now + dot.tickIntervalMs;
     }
@@ -600,9 +635,10 @@ const SKILLS = {
     cast(character, target) {
       const { amount, crit } = computeStatDamage(character, 'intelligence', 0.9);
       // La brûlure ne se pose que si le coup a réellement porté (pas esquivé/déphasage).
-      if (dealDamage(target, amount, '255, 112, 67', character, crit)) {
+      if (dealDamage(target, amount, '255, 112, 67', character, crit, 'Boule de feu')) {
         applyDot(target, {
           kind: 'burn', ticksLeft: 3, tickIntervalMs: 1000, rgb: '255, 87, 34', source: character,
+          skillName: 'Boule de feu (brûlure)',
           damagePerTick: Math.round(character.stats.intelligence * 0.15),
         });
       }
@@ -614,7 +650,7 @@ const SKILLS = {
       const { amount, crit } = computeStatDamage(character, 'intelligence', 0.7);
       // Ralentit les déplacements de la cible (si le coup porte) -- sans effet visible sur le
       // boss actuel, qui ne se déplace jamais, mais prêt pour un futur ennemi mobile.
-      if (dealDamage(target, amount, '79, 195, 247', character, crit)) {
+      if (dealDamage(target, amount, '79, 195, 247', character, crit, 'Trait de givre')) {
         target.slowMultiplier = 0.5;
         target.slowUntil = performance.now() + 3000;
       }
@@ -625,16 +661,17 @@ const SKILLS = {
     cast(character, target) {
       const { amount, crit } = computeStatDamage(character, 'force', 1.2);
       const damage = isBehind(character, target) ? amount * 2 : amount;
-      dealDamage(target, damage, '186, 104, 200', character, crit);
+      dealDamage(target, damage, '186, 104, 200', character, crit, 'Coup sournois');
     },
   },
   surinage: {
     id: 'surinage', name: 'Surinage', shortLabel: 'Surinage', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character, target) {
       const { amount, crit } = computeStatDamage(character, 'force', 0.7);
-      if (dealDamage(target, amount, '229, 57, 53', character, crit)) {
+      if (dealDamage(target, amount, '229, 57, 53', character, crit, 'Surinage')) {
         applyDot(target, {
           kind: 'bleed', ticksLeft: 4, tickIntervalMs: 800, rgb: '229, 57, 53', source: character,
+          skillName: 'Surinage (saignement)',
           damagePerTick: Math.round(character.stats.force * 0.12),
         });
       }
@@ -1024,8 +1061,10 @@ canvas.addEventListener('pointerdown', (event) => {
     return;
   }
 
-  // Hors de la scène "combat", il n'y a pas de personnages à sélectionner/déplacer.
-  if (currentScene !== 'combat') return;
+  // Hors de la scène "combat", il n'y a pas de personnages à sélectionner/déplacer -- et une fois
+  // le combat terminé (écran de victoire/défaite), plus aucune interaction avec le champ de
+  // bataille figé en dessous, seuls les boutons de l'écran de fin (déjà gérés ci-dessus) réagissent.
+  if (currentScene !== 'combat' || combatPhase === 'victory' || combatPhase === 'defeat') return;
 
   pointerId = event.pointerId;
   pointerActive = true;
@@ -1260,6 +1299,140 @@ function drawThreatPanel(enemy, now) {
     ctx.fillStyle = '#ffffff99';
     ctx.textAlign = 'right';
     ctx.fillText(String(Math.round(entry.threat)), panelX + panelWidth - 10, rowY);
+  });
+}
+
+// Une ligne "libellé ...... valeur" dans le détail déplié de l'écran de fin (voir plus bas).
+function drawStatLine(x, y, width, label, value) {
+  ctx.textAlign = 'left';
+  ctx.font = '11px sans-serif';
+  ctx.fillStyle = '#ffffffcc';
+  ctx.fillText(label, x, y);
+  ctx.textAlign = 'right';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(String(value), x + width, y);
+  ctx.textAlign = 'left';
+}
+
+// Écran de fin de combat (voir combatPhase) : victoire ou défaite, résumé des dégâts
+// infligés/subis par personnage, et un détail dépliable par compétence/ennemi (voir
+// combatStats/expandedStatsCharacter). Boutons pour relancer le même combat ou revenir à la carte.
+function drawCombatEndScreen(now) {
+  ctx.fillStyle = 'rgba(8, 10, 13, 0.94)';
+  ctx.fillRect(0, TOP_BANNER_HEIGHT, canvas.width, canvas.height - TOP_BANNER_HEIGHT);
+
+  const victory = combatPhase === 'victory';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'alphabetic';
+  ctx.font = 'bold 30px sans-serif';
+  ctx.fillStyle = victory ? '#66bb6a' : '#ef5350';
+  ctx.fillText(victory ? 'VICTOIRE' : 'DÉFAITE', canvas.width / 2, TOP_BANNER_HEIGHT + 42);
+
+  const cardX = LIST_PADDING_X;
+  const cardWidth = canvas.width - LIST_PADDING_X * 2;
+  const rowHeight = 44;
+  let y = TOP_BANNER_HEIGHT + 60;
+
+  for (const character of characters.filter((c) => c.playerControlled)) {
+    const stats = combatStats[character.index] || { dealt: { total: 0, bySkill: {}, byEnemy: {} }, taken: { total: 0, bySkill: {}, byEnemy: {} } };
+    const expanded = expandedStatsCharacter === character;
+
+    ctx.fillStyle = '#ffffff0d';
+    ctx.fillRect(cardX, y, cardWidth, rowHeight);
+    ctx.strokeStyle = '#ffffff22';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(cardX + 0.5, y + 0.5, cardWidth - 1, rowHeight - 1);
+
+    ctx.fillStyle = character.color;
+    ctx.fillRect(cardX + 10, y + 9, 14, 14);
+
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.font = 'bold 13px sans-serif';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(`${character.label} · ${character.className}`, cardX + 32, y + 17);
+
+    ctx.font = '11px sans-serif';
+    ctx.fillStyle = '#ffffffbb';
+    ctx.fillText(`Infligé ${stats.dealt.total}   Subi ${stats.taken.total}`, cardX + 32, y + 33);
+
+    ctx.textAlign = 'right';
+    ctx.font = 'bold 12px sans-serif';
+    ctx.fillStyle = '#ffd54f';
+    ctx.fillText(expanded ? '▾ Détails' : '▸ Détails', cardX + cardWidth - 10, y + rowHeight / 2 + 4);
+    ctx.textAlign = 'left';
+
+    registerHitRect(cardX, y, cardWidth, rowHeight, () => {
+      expandedStatsCharacter = expandedStatsCharacter === character ? null : character;
+    });
+
+    y += rowHeight + 6;
+
+    if (expanded) {
+      const dealtSkills = Object.entries(stats.dealt.bySkill).sort((a, b) => b[1] - a[1]);
+      const takenByEnemy = Object.entries(stats.taken.byEnemy).sort((a, b) => b[1] - a[1]);
+      const lineCount = Math.max(dealtSkills.length, 1) + Math.max(takenByEnemy.length, 1);
+      const detailHeight = 36 + lineCount * 16 + 8;
+
+      ctx.fillStyle = '#ffffff08';
+      ctx.fillRect(cardX, y, cardWidth, detailHeight);
+      ctx.strokeStyle = '#ffffff1a';
+      ctx.strokeRect(cardX + 0.5, y + 0.5, cardWidth - 1, detailHeight - 1);
+
+      let dy = y + 10;
+      ctx.font = 'bold 11px sans-serif';
+      ctx.fillStyle = '#ffffff99';
+      ctx.fillText('Infligés par compétence', cardX + 16, dy + 8);
+      dy += 18;
+      if (dealtSkills.length === 0) {
+        drawStatLine(cardX + 20, dy, cardWidth - 36, 'Aucun', 0);
+        dy += 16;
+      } else {
+        for (const [label, amount] of dealtSkills) {
+          drawStatLine(cardX + 20, dy, cardWidth - 36, label, amount);
+          dy += 16;
+        }
+      }
+
+      dy += 6;
+      ctx.font = 'bold 11px sans-serif';
+      ctx.fillStyle = '#ffffff99';
+      ctx.fillText('Subis par ennemi', cardX + 16, dy + 8);
+      dy += 18;
+      if (takenByEnemy.length === 0) {
+        drawStatLine(cardX + 20, dy, cardWidth - 36, 'Aucun', 0);
+        dy += 16;
+      } else {
+        for (const [label, amount] of takenByEnemy) {
+          drawStatLine(cardX + 20, dy, cardWidth - 36, label, amount);
+          dy += 16;
+        }
+      }
+
+      y += detailHeight + 8;
+    }
+  }
+
+  y += 10;
+  const buttonWidth = (cardWidth - 12) / 2;
+  const buttonHeight = 44;
+
+  ctx.fillStyle = '#2e7d32';
+  ctx.fillRect(cardX, y, buttonWidth, buttonHeight);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText('Rejouer', cardX + buttonWidth / 2, y + buttonHeight / 2 + 1);
+  registerHitRect(cardX, y, buttonWidth, buttonHeight, () => enterCombatLevel(currentWorldLevel));
+
+  const secondX = cardX + buttonWidth + 12;
+  ctx.fillStyle = '#37474f';
+  ctx.fillRect(secondX, y, buttonWidth, buttonHeight);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText('Retour à la carte', secondX + buttonWidth / 2, y + buttonHeight / 2 + 1);
+  registerHitRect(secondX, y, buttonWidth, buttonHeight, () => {
+    currentScene = 'monde';
   });
 }
 
@@ -1819,7 +1992,9 @@ function enterCombatLevel(index) {
   combatOutcomeHandled = false;
   combatPhase = 'prePull';
   threatPanelEnemy = null;
+  expandedStatsCharacter = null;
   resetCombatEncounter(index);
+  combatStats = createCombatStats(); // après resetCombatEncounter : a besoin des personnages déjà en place
   currentScene = 'combat';
 }
 
@@ -1841,24 +2016,33 @@ function grantXp(entity, amount) {
   }
 }
 
-// Débloque le rond suivant et distribue l'XP de victoire (personnages ET joueurs, demande
-// utilisateur explicite) dès que le boss du combat affiché tombe à 0 PV -- appelé à chaque image
-// (voir loop()), mais combatOutcomeHandled évite de redéclencher tout ça en boucle tant qu'on n'a
-// pas relancé un nouveau combat (voir enterCombatLevel).
+// Détecte la fin du combat affiché -- victoire (boss à 0 PV) ou défaite (plus aucun personnage
+// vivant) -- et bascule combatPhase sur l'écran de fin correspondant (voir drawCombatEndScreen).
+// Débloque aussi le rond suivant et distribue l'XP de victoire (personnages ET joueurs, demande
+// utilisateur explicite). Appelé à chaque image (voir loop()), mais combatOutcomeHandled évite de
+// redéclencher tout ça en boucle tant qu'on n'a pas relancé un nouveau combat (voir enterCombatLevel).
 function checkCombatOutcome() {
   if (currentScene !== 'combat' || combatOutcomeHandled) return;
   const boss = enemies[0];
-  if (!boss || boss.hp > 0) return;
+  if (!boss) return;
 
-  combatOutcomeHandled = true;
-  if (currentWorldLevel === worldProgress) {
-    worldProgress = Math.min(worldProgress + 1, WORLD_LEVELS.length);
+  if (boss.hp <= 0) {
+    combatOutcomeHandled = true;
+    combatPhase = 'victory';
+    if (currentWorldLevel === worldProgress) {
+      worldProgress = Math.min(worldProgress + 1, WORLD_LEVELS.length);
+    }
+    for (const character of characters) {
+      if (character.playerControlled) grantXp(character, VICTORY_XP);
+    }
+    for (const player of players) grantXp(player, VICTORY_XP);
+    return;
   }
 
-  for (const character of characters) {
-    if (character.playerControlled) grantXp(character, VICTORY_XP);
+  if (combatPhase === 'active' && characters.every((c) => !c.playerControlled || c.hp <= 0)) {
+    combatOutcomeHandled = true;
+    combatPhase = 'defeat';
   }
-  for (const player of players) grantXp(player, VICTORY_XP);
 }
 
 function drawCheckmark(x, y, size) {
@@ -1985,11 +2169,16 @@ function draw() {
     }
 
     drawFloatingTexts(performance.now());
-    drawPullOverlay(performance.now());
-    if (threatPanelEnemy) drawThreatPanel(threatPanelEnemy, performance.now());
 
-    const selected = characters.find((c) => c.selected);
-    if (selected) drawSelectionBanner(selected);
+    if (combatPhase === 'victory' || combatPhase === 'defeat') {
+      drawCombatEndScreen(performance.now());
+    } else {
+      drawPullOverlay(performance.now());
+      if (threatPanelEnemy) drawThreatPanel(threatPanelEnemy, performance.now());
+
+      const selected = characters.find((c) => c.selected);
+      if (selected) drawSelectionBanner(selected);
+    }
   } else if (currentScene === 'joueur') {
     drawPlayerScene();
   } else if (currentScene === 'personnage') {
