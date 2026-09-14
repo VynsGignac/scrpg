@@ -114,6 +114,7 @@ for (let i = 0; i < 3; i++) {
   characters.push({
     x: squareXs[i], y: cy, size: CHARACTER_SIZE, color: squareColors[i], selected: false, isMoving: false,
     playerControlled: true, index: i + 1, className: chosenClasses[i], level: randomInt(1, 100),
+    label: chosenClasses[i].charAt(0), // ex. "M" pour Mage -- affiché sur le carré (voir drawCharacter)
     stats, hp: hpMax, hpMax, mana: manaMax, manaMax,
   });
 
@@ -132,7 +133,7 @@ const BOSS_HP_MAX = 5000;
 const bossSpawn = clampPointToField({ size: ENEMY_SIZE }, cx, cy - 220);
 characters.push({
   x: bossSpawn.x, y: bossSpawn.y, size: ENEMY_SIZE, color: '#c62828', selected: false, isMoving: false,
-  playerControlled: false, hp: BOSS_HP_MAX, hpMax: BOSS_HP_MAX,
+  playerControlled: false, hp: BOSS_HP_MAX, hpMax: BOSS_HP_MAX, label: 'B',
   facingAngle: Math.PI / 2, // tourné vers le bas (zone de départ des personnages) -- voir Coup sournois
   stats: { force: 24 }, // seule stat nécessaire : reprend le calcul de dégâts générique (updateCombat)
 });
@@ -175,7 +176,7 @@ function combatProfile(character) {
 }
 
 function hitTestEnemyAt(x, y) {
-  return enemies.find((e) => isInsideCharacter(e, x, y)) || null;
+  return enemies.find((e) => e.hp > 0 && isInsideCharacter(e, x, y)) || null;
 }
 
 function orderAttack(character, enemy) {
@@ -207,6 +208,7 @@ function orderAttack(character, enemy) {
 // comme la cible peut elle-même se déplacer entre-temps, le boss recalcule sa route à chaque
 // fois qu'il arrive quelque part sans être encore à portée, plutôt qu'une seule fois au départ.
 function updateBossAI(boss, now) {
+  if (boss.hp <= 0) return;
   if (!boss.attackTarget) {
     const alivePlayers = characters.filter((c) => c.playerControlled && c.hp > 0);
     if (alivePlayers.length === 0) return;
@@ -243,7 +245,7 @@ function nearestEnemyTo(character) {
 // plus rien pour lui -- il reprend uniquement les ordres du joueur (voir pointerup), plus la
 // riposte passive sans déplacement gérée au début de updateCombat ci-dessous, commune à tous.
 function updateAutoPlay(character) {
-  if (character.selected) return;
+  if (character.selected || character.hp <= 0) return;
 
   const target = nearestEnemyTo(character);
   if (!target) return;
@@ -263,6 +265,8 @@ function updateAutoPlay(character) {
 // juste à côté, distance : dans RANGED_ATTACK_RANGE) -- "arrivé" = plus en train de se déplacer,
 // pas besoin de revérifier la distance puisque orderAttack a déjà choisi une destination valide.
 function updateCombat(character, now) {
+  if (character.hp <= 0) return; // mort : ne peut plus attaquer
+
   // Riposte passive, sans déplacement : un personnage du joueur sans cible qui a déjà un ennemi
   // à portée l'attaque sans qu'un ordre explicite soit nécessaire -- qu'il soit sélectionné ou
   // non (la poursuite ACTIVE, avec déplacement, reste elle réservée aux non-sélectionnés, voir
@@ -384,7 +388,7 @@ function isBehind(attacker, target) {
 }
 
 function lowestHpAlly() {
-  const players_ = characters.filter((c) => c.playerControlled);
+  const players_ = characters.filter((c) => c.playerControlled && c.hp > 0);
   if (players_.length === 0) return null;
   return players_.reduce((worst, c) => (c.hp / c.hpMax < worst.hp / worst.hpMax ? c : worst));
 }
@@ -466,6 +470,7 @@ function isInRangeOf(character, target) {
 }
 
 function castSkill(character, skillId) {
+  if (character.hp <= 0) return; // mort : ne peut plus lancer de sort
   const skill = SKILLS[skillId];
   if (!skill) return;
 
@@ -492,6 +497,10 @@ function castSkill(character, skillId) {
 // entre deux personnages qui se déplacent en même temps (voir resolveOverlaps) reste effectif
 // d'une image à l'autre plutôt que d'être écrasé.
 function updateMove(character, dt) {
+  if (character.hp <= 0) {
+    character.isMoving = false; // mort en cours de route : s'arrête net, ne termine pas son trajet
+    return;
+  }
   if (!character.isMoving) return;
   let remaining = PIXELS_PER_MS * dt;
 
@@ -724,11 +733,12 @@ function hitTestSceneButton(x, y) {
   return null;
 }
 
-// L'adversaire (playerControlled: false) n'est ni sélectionnable ni déplaçable par le joueur.
+// L'adversaire (playerControlled: false) n'est ni sélectionnable ni déplaçable par le joueur ;
+// un personnage mort (0 PV) non plus -- voir la croix rouge dans drawCharacter.
 function hitTestCharacter(x, y) {
   for (let i = characters.length - 1; i >= 0; i--) {
     const c = characters[i];
-    if (c.playerControlled && isInsideCharacter(c, x, y)) return c;
+    if (c.playerControlled && c.hp > 0 && isInsideCharacter(c, x, y)) return c;
   }
   return null;
 }
@@ -853,14 +863,38 @@ function drawCharacter(character) {
     ctx.lineWidth = 4;
     ctx.strokeRect(character.x - half - 6, character.y - half - 6, character.size + 12, character.size + 12);
   }
-  ctx.fillStyle = character.color;
+  const dead = character.hp <= 0;
+  ctx.fillStyle = dead ? '#4a4a4a' : character.color;
   ctx.fillRect(character.x - half, character.y - half, character.size, character.size);
 
   // Bouclier actif (Mur sacré) : fin liseré bleuté autour du personnage tant qu'il tient.
-  if (character.shieldHp > 0) {
+  if (!dead && character.shieldHp > 0) {
     ctx.strokeStyle = '#80d8ffcc';
     ctx.lineWidth = 3;
     ctx.strokeRect(character.x - half - 3, character.y - half - 3, character.size + 6, character.size + 6);
+  }
+
+  if (dead) {
+    // Croix rouge par-dessus le carré : mort, ne peut plus être déplacé ni ciblé (voir
+    // hitTestCharacter/hitTestEnemyAt et les gardes en tête de updateMove/updateCombat/updateAutoPlay).
+    const inset = character.size * 0.15;
+    ctx.strokeStyle = '#ff1744';
+    ctx.lineWidth = Math.max(3, character.size * 0.09);
+    ctx.beginPath();
+    ctx.moveTo(character.x - half + inset, character.y - half + inset);
+    ctx.lineTo(character.x + half - inset, character.y + half - inset);
+    ctx.moveTo(character.x + half - inset, character.y - half + inset);
+    ctx.lineTo(character.x - half + inset, character.y + half - inset);
+    ctx.stroke();
+  } else if (character.label) {
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `bold ${Math.round(character.size * 0.5)}px sans-serif`;
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
+    ctx.strokeText(character.label, character.x, character.y + 1);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(character.label, character.x, character.y + 1);
   }
 }
 
