@@ -863,6 +863,7 @@ const SKILLS = {
   // proportionnel.
   frappeRageuse: {
     id: 'frappeRageuse', name: 'Frappe rageuse', shortLabel: 'Frappe\nrageuse', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: '90% Force. Génère 3 Rage.',
     cast(character, target) {
       const { amount, crit } = computeStatDamage(character, 'force', 0.9);
       dealDamage(target, amount, '158, 158, 158', character, crit, 'Frappe rageuse');
@@ -871,6 +872,7 @@ const SKILLS = {
   },
   tourbillon: {
     id: 'tourbillon', name: 'Tourbillon', shortLabel: 'Tourbillon', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: '60% Force à tous les ennemis. Génère 3 Rage par ennemi touché.',
     cast(character) {
       for (const enemy of enemies) {
         if (enemy.hp <= 0) continue;
@@ -882,6 +884,7 @@ const SKILLS = {
   },
   postureDefensive: {
     id: 'postureDefensive', name: 'Posture défensive', shortLabel: 'Posture\ndéf.', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    description: '-40% dégâts subis pendant 4s. Chaque coup encaissé génère de la Rage.',
     cast(character) {
       const now = performance.now();
       character.damageReductionFactor = 0.4;
@@ -891,6 +894,7 @@ const SKILLS = {
   },
   criDeRage: {
     id: 'criDeRage', name: 'Cri de rage', shortLabel: 'Cri de\nrage', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    description: "Consomme toute la Rage : +15% dégâts par stack (jusqu'à +150%), pendant 5s +1.5s par stack.",
     cast(character) {
       const stacks = character.rage || 0;
       character.rage = 0;
@@ -910,6 +914,7 @@ const SKILLS = {
   // nécessite l'attention d'un soigneur pour être soutenable, plutôt qu'auto-suffisant.
   eventration: {
     id: 'eventration', name: 'Éventration', shortLabel: 'Éventration', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: '120% Force (x2 si la cible est sous 50% PV). Coûte 12% de vos PV max.',
     cast(character, target) {
       character.hp = Math.max(1, character.hp - Math.round(character.hpMax * 0.12));
       const { amount, crit } = computeStatDamage(character, 'force', 1.2);
@@ -919,6 +924,7 @@ const SKILLS = {
   },
   cercleDeSang: {
     id: 'cercleDeSang', name: 'Cercle de sang', shortLabel: 'Cercle\nde sang', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: '70% Force à tous les ennemis. Coûte 20% de vos PV max.',
     cast(character) {
       character.hp = Math.max(1, character.hp - Math.round(character.hpMax * 0.2));
       for (const enemy of enemies) {
@@ -930,6 +936,7 @@ const SKILLS = {
   },
   peauDePierre: {
     id: 'peauDePierre', name: 'Peau de pierre', shortLabel: 'Peau de\npierre', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    description: '-30% dégâts subis 5s. Soigne 5% de vos PV max.',
     cast(character) {
       character.damageReductionFactor = 0.3;
       character.damageReductionUntil = performance.now() + 5000;
@@ -938,6 +945,7 @@ const SKILLS = {
   },
   frenesie: {
     id: 'frenesie', name: 'Frénésie', shortLabel: 'Frénésie', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    description: '+30% dégâts infligés (+50% si sous 50% PV) mais +20% dégâts subis, pendant 5s.',
     cast(character) {
       const now = performance.now();
       const desperate = character.hp / character.hpMax < 0.5;
@@ -951,6 +959,7 @@ const SKILLS = {
   // ============================== PALADIN (Force/Savoir, mêlée) ==============================
   chatiment: {
     id: 'chatiment', name: 'Châtiment', shortLabel: 'Châtiment', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: '110% Force (150% si un bouclier est actif sur vous).',
     cast(character, target) {
       const now = performance.now();
       const empowered = character.shieldHp > 0 && (character.shieldExpiresAt || 0) > now;
@@ -960,6 +969,7 @@ const SKILLS = {
   },
   vagueSacree: {
     id: 'vagueSacree', name: 'Vague sacrée', shortLabel: 'Vague\nsacrée', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: '50% Force à tous les ennemis. Vous soigne de 40% des dégâts infligés.',
     cast(character) {
       let totalDealt = 0;
       for (const enemy of enemies) {
@@ -976,6 +986,7 @@ const SKILLS = {
   // soin mono-cible (voir plus bas).
   murSacre: {
     id: 'murSacre', name: 'Mur sacré', shortLabel: 'Mur\nsacré', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: 'Bouclier + provoque la cible 3s + -25% dégâts subis, pendant 8s.',
     cast(character, target) {
       // Bouclier + provocation + réduction de dégâts (fusionnés) : le Paladin encaisse pendant
       // qu'il force l'ennemi à le cibler, quelle que soit la menace des autres (voir updateEnemyAI).
@@ -993,6 +1004,7 @@ const SKILLS = {
   },
   lumiereDivine: {
     id: 'lumiereDivine', name: 'Lumière divine', shortLabel: 'Lumière\ndivine', targeting: 'ally', cooldownMs: SKILL_COOLDOWN_MS,
+    description: "Soigne l'allié le plus faible (10 + 40% Savoir).",
     cast(character) {
       const heal = 10 + Math.round(character.stats.savoir * 0.4);
       healCharacter(lowestHpAlly() || character, heal, character);
@@ -1006,6 +1018,7 @@ const SKILLS = {
   // en saignement) soit un vrai choix payant plutôt qu'un bonus cosmétique.
   coupSournois: {
     id: 'coupSournois', name: 'Coup sournois', shortLabel: 'Coup\nsournois', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: "120% Force, x2.5 dans le dos (ou via Forme d'ombre / cible en saignement).",
     cast(character, target) {
       const now = performance.now();
       const { amount, crit } = computeStatDamage(character, 'force', 1.2);
@@ -1020,6 +1033,7 @@ const SKILLS = {
   },
   fauchage: {
     id: 'fauchage', name: 'Fauchage', shortLabel: 'Fauchage', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: '60% Force à tous les ennemis + saignement (3 ticks).',
     cast(character) {
       for (const enemy of enemies) {
         if (enemy.hp <= 0) continue;
@@ -1035,6 +1049,7 @@ const SKILLS = {
   },
   formeDOmbre: {
     id: 'formeDOmbre', name: "Forme d'ombre", shortLabel: "Forme\nd'ombre", targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    description: "+25% esquive pendant 5s. La prochaine attaque compte comme dans le dos.",
     cast(character) {
       const now = performance.now();
       character.dodgeChance = 0.25;
@@ -1045,6 +1060,7 @@ const SKILLS = {
   },
   surinage: {
     id: 'surinage', name: 'Surinage', shortLabel: 'Surinage', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: '70% Force + saignement plus long (4 ticks).',
     cast(character, target) {
       const { amount, crit } = computeStatDamage(character, 'force', 0.7);
       if (dealDamage(target, amount, '229, 57, 53', character, crit, 'Surinage')) {
@@ -1059,6 +1075,7 @@ const SKILLS = {
   // ============================== MAGE (Intelligence, distance) -- glace uniquement ==============================
   eclatDeGlace: {
     id: 'eclatDeGlace', name: 'Éclat de glace', shortLabel: 'Éclat\nde glace', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: '80% Intelligence. Ralentit la cible (déplacement et cadence d\'attaque) 2.5s.',
     cast(character, target) {
       const { amount, crit } = computeStatDamage(character, 'intelligence', 0.8);
       if (dealDamage(target, amount, '79, 195, 247', character, crit, 'Éclat de glace')) {
@@ -1072,6 +1089,7 @@ const SKILLS = {
   },
   novaDeGivre: {
     id: 'novaDeGivre', name: 'Nova de givre', shortLabel: 'Nova de\ngivre', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: '50% Intelligence à tous les ennemis. Les ralentit 2.5s.',
     cast(character) {
       for (const enemy of enemies) {
         if (enemy.hp <= 0) continue;
@@ -1085,6 +1103,7 @@ const SKILLS = {
   },
   voileDeGivre: {
     id: 'voileDeGivre', name: 'Voile de givre', shortLabel: 'Voile de\ngivre', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    description: 'Bouclier. Ralentit quiconque le frappe.',
     cast(character) {
       const shield = 15 + Math.round(character.stats.intelligence * 1.0);
       character.shieldHp = shield;
@@ -1095,6 +1114,7 @@ const SKILLS = {
   },
   gel: {
     id: 'gel', name: 'Gel', shortLabel: 'Gel', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: '20% Intelligence + ralentit, ou 30% + étourdit 2s si la cible est déjà ralentie.',
     cast(character, target) {
       const now = performance.now();
       const alreadySlowed = (target.slowUntil || 0) > now;
@@ -1119,6 +1139,7 @@ const SKILLS = {
   // systématiquement (voir Explosion, qui ne convertit plus que la moitié de la brûlure).
   bouleDeFeu: {
     id: 'bouleDeFeu', name: 'Boule de feu', shortLabel: 'Boule\nde feu', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: "45% Intelligence. Pose 1 stack de brûlure (jusqu'à 3, entretenue si relancée).",
     cast(character, target) {
       const { amount, crit } = computeStatDamage(character, 'intelligence', 0.45);
       if (dealDamage(target, amount, '255, 112, 67', character, crit, 'Boule de feu')) {
@@ -1128,6 +1149,7 @@ const SKILLS = {
   },
   pluieDeFeu: {
     id: 'pluieDeFeu', name: 'Pluie de feu', shortLabel: 'Pluie de\nfeu', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: '25% Intelligence à tous les ennemis. Pose 1 stack de brûlure sur chacun.',
     cast(character) {
       for (const enemy of enemies) {
         if (enemy.hp <= 0) continue;
@@ -1140,6 +1162,7 @@ const SKILLS = {
   },
   bouclierDeFlammes: {
     id: 'bouclierDeFlammes', name: 'Bouclier de flammes', shortLabel: 'Bouclier\nflammes', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    description: 'Bouclier. Brûle quiconque le frappe.',
     cast(character) {
       const shield = 15 + Math.round(character.stats.intelligence * 1.0);
       character.shieldHp = shield;
@@ -1150,6 +1173,7 @@ const SKILLS = {
   },
   explosion: {
     id: 'explosion', name: 'Explosion', shortLabel: 'Explosion', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: '30% Intelligence + détone 50% de la brûlure stockée (remet les stacks à 0).',
     cast(character, target) {
       // Détone les stacks de brûlure actifs pour un burst immédiat -- ne convertit plus que la
       // moitié de leur valeur (demande utilisateur explicite : détoner a un vrai coût
@@ -1170,6 +1194,7 @@ const SKILLS = {
   // ============================== CHASSEUR (Force, distance) ==============================
   tirPercant: {
     id: 'tirPercant', name: 'Tir perçant', shortLabel: 'Tir\nperçant', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: "90% Force. Jusqu'à +50% à longue portée, +15% si la cible est marquée.",
     cast(character, target) {
       const now = performance.now();
       const dist = Math.hypot(character.x - target.x, character.y - target.y);
@@ -1181,6 +1206,7 @@ const SKILLS = {
   },
   tirEnRafale: {
     id: 'tirEnRafale', name: 'Tir en rafale', shortLabel: 'Tir en\nrafale', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: "Jusqu'à 3 tirs dégressifs (80/48/29% Force), chacun sur un ennemi différent.",
     cast(character) {
       // Vise jusqu'à 3 ennemis DIFFÉRENTS (dégressif à chaque tir) -- un rebond ne retombe jamais
       // sur une cible déjà touchée (demande utilisateur explicite) : avec un seul ennemi présent
@@ -1199,6 +1225,7 @@ const SKILLS = {
   },
   repliTactique: {
     id: 'repliTactique', name: 'Repli tactique', shortLabel: 'Repli\ntactique', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    description: "Esquive totale 1s + recul loin de l'ennemi le plus proche.",
     cast(character) {
       const now = performance.now();
       character.dodgeChance = 1;
@@ -1213,6 +1240,7 @@ const SKILLS = {
   },
   piegeAOurs: {
     id: 'piegeAOurs', name: 'Piège à ours', shortLabel: 'Piège\nà ours', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: "70% Force, jusqu'à +60% à longue portée. Marque la cible 6s (bonus pour Tir perçant).",
     cast(character, target) {
       const dist = Math.hypot(character.x - target.x, character.y - target.y);
       const distBonus = Math.min(0.6, dist / 440);
@@ -1225,6 +1253,7 @@ const SKILLS = {
   // ============================== DRUIDE (Intelligence, distance) ==============================
   morsureVenimeuse: {
     id: 'morsureVenimeuse', name: 'Morsure venimeuse', shortLabel: 'Morsure\nvenim.', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: '60% Intelligence + poison (4 ticks).',
     cast(character, target) {
       const { amount, crit } = computeStatDamage(character, 'intelligence', 0.6);
       if (dealDamage(target, amount, '124, 179, 66', character, crit, 'Morsure venimeuse')) {
@@ -1237,6 +1266,7 @@ const SKILLS = {
   },
   epinesEmpoisonnees: {
     id: 'epinesEmpoisonnees', name: 'Épines empoisonnées', shortLabel: 'Épines\nempois.', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: "Consomme le poison accumulé sur les ennemis pour soigner l'allié le plus faible.",
     cast(character) {
       // Consomme le poison accumulé sur tous les ennemis (voir applyDot/poisonStacks) pour
       // rendre des PV à l'allié le plus mal en point -- x2 par stack consommée.
@@ -1253,6 +1283,7 @@ const SKILLS = {
   },
   carapaceDEcorce: {
     id: 'carapaceDEcorce', name: "Carapace d'écorce", shortLabel: "Carapace\nd'écorce", targeting: 'ally', cooldownMs: SKILL_COOLDOWN_MS,
+    description: "Bouclier + soin sur l'allié le plus faible.",
     cast(character) {
       const target = lowestHpAlly() || character;
       const shield = 10 + Math.round(character.stats.intelligence * 0.8);
@@ -1264,6 +1295,7 @@ const SKILLS = {
   },
   chantDeLaForet: {
     id: 'chantDeLaForet', name: 'Chant de la forêt', shortLabel: 'Chant de\nla forêt', targeting: 'ally', cooldownMs: SKILL_COOLDOWN_MS,
+    description: 'Soigne tout le groupe.',
     cast(character) {
       const heal = Math.round(character.stats.savoir * 0.4);
       for (const c of characters) {
@@ -1279,6 +1311,7 @@ const SKILLS = {
   // Mot de douleur rentabilise l'attente. Mot de douleur rend aussi un peu de mana à qui il soigne.
   motDeDouleur: {
     id: 'motDeDouleur', name: 'Mot de douleur', shortLabel: 'Mot de\ndouleur', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: '50% Intelligence + soigne tout le groupe (boosté par la Grâce) et rend un peu de mana.',
     cast(character, target) {
       const { amount, crit } = computeStatDamage(character, 'intelligence', 0.5);
       if (dealDamage(target, amount, '245, 245, 245', character, crit, 'Mot de douleur')) {
@@ -1296,6 +1329,7 @@ const SKILLS = {
   },
   cercleSacre: {
     id: 'cercleSacre', name: 'Cercle sacré', shortLabel: 'Cercle\nsacré', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    description: '-25% dégâts subis pour les alliés proches ; brûlure + ralentissement aux ennemis proches.',
     cast(character) {
       const now = performance.now();
       for (const ally of characters) {
@@ -1318,6 +1352,7 @@ const SKILLS = {
   },
   voileProtecteur: {
     id: 'voileProtecteur', name: 'Voile protecteur', shortLabel: 'Voile\nprotecteur', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    description: 'Bouclier sur soi.',
     cast(character) {
       const shield = 15 + Math.round(character.stats.savoir * 1.0);
       character.shieldHp = shield;
@@ -1327,6 +1362,7 @@ const SKILLS = {
   },
   soinMajeur: {
     id: 'soinMajeur', name: 'Soin majeur', shortLabel: 'Soin\nmajeur', targeting: 'ally', cooldownMs: SKILL_COOLDOWN_MS,
+    description: "Gros soin sur l'allié le plus faible (plus fort s'il vient d'être touché). Pose un stack de Grâce (jusqu'à 5) pour le prochain Mot de douleur.",
     cast(character) {
       const target = lowestHpAlly() || character;
       const recentlyHit = performance.now() - (target.lastDamageTakenAt || 0) <= 3000;
@@ -1344,6 +1380,7 @@ const SKILLS = {
   // souvent (seuil abaissé).
   drainDeVie: {
     id: 'drainDeVie', name: 'Drain de vie', shortLabel: 'Drain de\nvie', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: '50% Intelligence. Vous soigne de 50% des dégâts infligés.',
     cast(character, target) {
       const { amount, crit } = computeStatDamage(character, 'intelligence', 0.5);
       if (dealDamage(target, amount, '81, 45, 168', character, crit, 'Drain de vie')) {
@@ -1353,6 +1390,7 @@ const SKILLS = {
   },
   epidemie: {
     id: 'epidemie', name: 'Épidémie', shortLabel: 'Épidémie', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: 'Empoisonne tous les ennemis. Explosion de zone si vos dégâts totaux dépassent un seuil (qui augmente ensuite).',
     cast(character) {
       for (const enemy of enemies) {
         if (enemy.hp <= 0) continue;
@@ -1377,6 +1415,7 @@ const SKILLS = {
   },
   pacteDeProtection: {
     id: 'pacteDeProtection', name: 'Pacte de protection', shortLabel: 'Pacte de\nprotection', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    description: 'Bouclier. Renvoie les dégâts absorbés à son expiration.',
     cast(character) {
       const shield = 15 + Math.round(character.stats.intelligence * 1.0);
       character.shieldHp = shield;
@@ -1389,6 +1428,7 @@ const SKILLS = {
   },
   malediction: {
     id: 'malediction', name: 'Malédiction', shortLabel: 'Malédic-\ntion', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: '-20% dégâts infligés par la cible pendant 5s. Explosion de zone si elle meurt maudite.',
     cast(character, target) {
       const now = performance.now();
       target.damageOutputMultiplier = 0.8; // -20% dégâts infligés par la cible
@@ -1404,6 +1444,7 @@ const SKILLS = {
   // pour le groupe positionné dessus.
   frappeDesEsprits: {
     id: 'frappeDesEsprits', name: 'Frappe des esprits', shortLabel: 'Frappe\nesprits', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: '70% Intelligence. +15% dégâts subis par la cible pendant 5s.',
     cast(character, target) {
       const { amount, crit } = computeStatDamage(character, 'intelligence', 0.7);
       if (dealDamage(target, amount, '236, 64, 122', character, crit, 'Frappe des esprits')) {
@@ -1414,6 +1455,7 @@ const SKILLS = {
   },
   chaineDEclairs: {
     id: 'chaineDEclairs', name: "Chaîne d'éclairs", shortLabel: "Chaîne\nd'éclairs", targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: "40% Intelligence. 2/3 de chance de rebondir (25%) sur un autre ennemi.",
     cast(character, target) {
       const { amount, crit } = computeStatDamage(character, 'intelligence', 0.4);
       dealDamage(target, amount, '255, 213, 79', character, crit, "Chaîne d'éclairs");
@@ -1433,6 +1475,7 @@ const SKILLS = {
   },
   boucliersDesAncetres: {
     id: 'boucliersDesAncetres', name: 'Bouclier des ancêtres', shortLabel: 'Bouclier\nancêtres', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    description: 'Bouclier + petit soin sur soi.',
     cast(character) {
       const shield = 15 + Math.round(character.stats.intelligence * 1.0);
       character.shieldHp = shield;
@@ -1443,6 +1486,7 @@ const SKILLS = {
   },
   totem: {
     id: 'totem', name: 'Totem', shortLabel: 'Totem', targeting: 'ally', cooldownMs: SKILL_COOLDOWN_MS,
+    description: '+20% dégâts et un soin pour le groupe resté à proximité, pendant 8s.',
     cast(character) {
       // Gros bonus de zone (demande utilisateur explicite : +20% dégâts et un vrai soin, pas un
       // petit bonus) mais seulement pour qui reste posté sur le totem (ZONE_RADIUS, comme Cercle
@@ -1869,6 +1913,14 @@ canvas.addEventListener('pointermove', (event) => {
   dragPreviewPath = computeAvoidancePath(activeTarget, activeTarget.x, activeTarget.y, dest.x, dest.y);
 });
 
+// Survol (souris/web) indépendant du drag ci-dessus -- toujours actif, pas seulement pendant un
+// appui (voir hoverRects/registerHoverRect). Ignoré sur tactile en pratique : un doigt ne "survole"
+// jamais sans contact.
+canvas.addEventListener('pointermove', (event) => {
+  const { x, y } = getPointerPos(event);
+  hoveredSkillsCharacter = hitTestHoverRects(x, y);
+});
+
 canvas.addEventListener('pointerup', (event) => {
   if (!pointerActive) return;
   const { x, y } = getPointerPos(event);
@@ -1909,6 +1961,7 @@ canvas.addEventListener('pointerup', (event) => {
 });
 
 canvas.addEventListener('pointercancel', clearPointerState);
+canvas.addEventListener('pointerleave', () => { hoveredSkillsCharacter = null; });
 // Filet de sécurité : si l'app passe en arrière-plan (changement d'app, verrouillage...) pendant
 // un drag, on ne reçoit pas forcément de pointerup/pointercancel propre.
 window.addEventListener('blur', clearPointerState);
@@ -2497,6 +2550,27 @@ function hitTestInteractiveRects(x, y) {
   return null;
 }
 
+// Zones "survolables" (mouseover) -- même principe que interactiveRects ci-dessus, mais pour de
+// l'affichage au survol plutôt qu'au clic (ex. le détail des compétences dans l'onglet
+// Personnage, voir drawRosterCharacterDetail). Recalculées à chaque image, consultées par le
+// pointermove de survol ci-dessous. Sans effet sur tactile (pas de survol sans contact) --
+// fonctionnalité pensée pour la souris/le web, demande utilisateur explicite ("lisible avec un
+// mousseover").
+let hoverRects = [];
+let hoveredSkillsCharacter = null;
+
+function registerHoverRect(x, y, width, height, data) {
+  hoverRects.push({ x, y, width, height, data });
+}
+
+function hitTestHoverRects(x, y) {
+  for (let i = hoverRects.length - 1; i >= 0; i--) {
+    const r = hoverRects[i];
+    if (x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height) return r.data;
+  }
+  return null;
+}
+
 const LIST_PADDING_X = 16;
 const CARD_PADDING = 14;
 const CARD_GAP = 12;
@@ -2663,7 +2737,107 @@ function drawRosterCharacterDetail(character, x, y, width) {
   }
   rowY += slotSize + 8;
 
+  // Case "Compétences" : juste une case (demande utilisateur explicite), le détail des 4 sorts de
+  // la classe ne s'affiche qu'au survol (voir drawSkillsTooltip, appelé depuis draw() quand
+  // hoveredSkillsCharacter est renseigné par le pointermove de survol ci-dessous).
+  const skillsTileHeight = 26;
+  const hovered = hoveredSkillsCharacter === character;
+  ctx.fillStyle = hovered ? '#ffd54f22' : '#ffffff0d';
+  ctx.fillRect(x, rowY, width, skillsTileHeight);
+  ctx.strokeStyle = hovered ? '#ffd54f' : '#ffffff33';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x + 0.5, rowY + 0.5, width - 1, skillsTileHeight - 1);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = '11px sans-serif';
+  ctx.fillStyle = hovered ? '#ffd54f' : '#ffffff99';
+  ctx.fillText('Compétences (survoler pour le détail)', x + width / 2, rowY + skillsTileHeight / 2 + 1);
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  registerHoverRect(x, rowY, width, skillsTileHeight, character);
+  rowY += skillsTileHeight + 8;
+
   return rowY - y;
+}
+
+// Découpe un texte en lignes tenant chacune dans maxWidth (avec la police déjà réglée sur ctx),
+// mot par mot -- pas de césure en plein milieu d'un mot.
+function wrapText(text, maxWidth) {
+  const words = text.split(' ');
+  const lines = [];
+  let current = '';
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word;
+    if (current && ctx.measureText(candidate).width > maxWidth) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current) lines.push(current);
+  return lines;
+}
+
+// Bulle de détail des 4 compétences de la classe -- affichée par-dessus tout le reste tant que la
+// case "Compétences" est survolée (voir hoveredSkillsCharacter). Positionnée pour rester entière
+// à l'écran (jamais coupée en haut, en bas ou sur les côtés).
+function drawSkillsTooltip(character) {
+  const skillIds = CLASS_SKILLS[character.className] || [];
+  const padding = 10;
+  const lineGap = 4;
+  const nameFont = 'bold 12px sans-serif';
+  const descFont = '11px sans-serif';
+  const width = Math.min(320, canvas.width - 24);
+  const descMaxWidth = width - padding * 2;
+
+  ctx.font = descFont;
+  const entries = skillIds.map((id) => {
+    const skill = SKILLS[id];
+    const lines = wrapText(skill.description || '', descMaxWidth);
+    return { skill, lines };
+  });
+
+  let contentHeight = padding;
+  for (const entry of entries) {
+    contentHeight += 16 + entry.lines.length * 14 + lineGap + 6;
+  }
+  contentHeight += padding - 6;
+
+  // Centré horizontalement, positionné juste sous le bandeau du haut (toujours visible, quelle
+  // que soit la ligne survolée dans la liste défilée... enfin, sans défilement -- juste une
+  // position fixe simple et prévisible).
+  const boxX = (canvas.width - width) / 2;
+  const boxY = Math.min(TOP_BANNER_HEIGHT + 10, canvas.height - contentHeight - 10);
+
+  ctx.fillStyle = 'rgba(16, 21, 26, 0.97)';
+  ctx.fillRect(boxX, boxY, width, contentHeight);
+  ctx.strokeStyle = '#ffd54f88';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(boxX + 0.5, boxY + 0.5, width - 1, contentHeight - 1);
+
+  let rowY = boxY + padding;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  for (const { skill, lines } of entries) {
+    ctx.font = nameFont;
+    ctx.fillStyle = '#ffd54f';
+    ctx.fillText(skill.name, boxX + padding, rowY + 11);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#ffffff77';
+    ctx.font = '10px sans-serif';
+    ctx.fillText(`${Math.round(skill.cooldownMs / 1000)}s`, boxX + width - padding, rowY + 11);
+    ctx.textAlign = 'left';
+    rowY += 16;
+
+    ctx.font = descFont;
+    ctx.fillStyle = '#ffffffcc';
+    for (const line of lines) {
+      ctx.fillText(line, boxX + padding, rowY + 10);
+      rowY += 14;
+    }
+    rowY += lineGap + 6;
+  }
 }
 
 // Scène "Personnage" : tout le roster (les 11 classes possédées), pas seulement les 4 actuellement
@@ -3164,6 +3338,7 @@ function draw() {
   ctx.fillStyle = '#10151a';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   interactiveRects = [];
+  hoverRects = [];
 
   if (currentScene === 'combat') {
     for (const character of characters) drawCharacter(character);
@@ -3234,6 +3409,7 @@ function draw() {
     drawPlayerScene();
   } else if (currentScene === 'personnage') {
     drawCharacterScene();
+    if (hoveredSkillsCharacter) drawSkillsTooltip(hoveredSkillsCharacter);
   } else if (currentScene === 'monde') {
     drawWorldScene();
   } else if (currentScene === 'guilde') {
