@@ -126,16 +126,30 @@ for (let i = 0; i < 3; i++) {
   });
 }
 
+// Les 5 combats de la carte du Monde (voir drawWorldScene) : un seul emplacement d'ennemi existe
+// dans le jeu (characters[3]), reconfiguré à chaque rond choisi (voir resetCombatEncounter) --
+// taille, PV, couleur, dégâts (melee ou à distance) et lettre affichée sur le carré changent,
+// pas le reste du moteur de combat (évitement, riposte passive, etc., déjà génériques).
+const ENCOUNTERS = [
+  { name: 'Gobelin', label: 'G', color: '#8bc34a', size: 44, hpMax: 250, statValue: 10, combat: { melee: true, stat: 'force' } },
+  { name: 'Archer squelette', label: 'A', color: '#cfd8dc', size: 52, hpMax: 400, statValue: 16, combat: { melee: false, stat: 'force' } },
+  { name: 'Brute orque', label: 'O', color: '#795548', size: 64, hpMax: 800, statValue: 26, combat: { melee: true, stat: 'force' } },
+  { name: 'Sorcière', label: 'S', color: '#ab47bc', size: 50, hpMax: 600, statValue: 22, combat: { melee: false, stat: 'force' } },
+  { name: 'Seigneur des ombres', label: 'B', color: '#c62828', size: 76, hpMax: 5000, statValue: 30, combat: { melee: true, stat: 'force' }, isBoss: true },
+];
+
 // Boss : plus gros, pas contrôlable par le joueur, a une barre de vie (voir drawEnemyHealthBar).
 // Choisit un personnage au hasard à sa première action et le poursuit/attaque pendant tout le
-// combat (voir updateBossAI) -- ne change jamais de cible.
-const BOSS_HP_MAX = 5000;
-const bossSpawn = clampPointToField({ size: ENEMY_SIZE }, cx, cy - 220);
+// combat (voir updateEnemyAI) -- ne change jamais de cible. Ses stats de départ viennent du
+// premier combat (voir resetCombatEncounter, appelé à chaque rond choisi sur la carte).
+const bossSpawn = clampPointToField({ size: ENCOUNTERS[0].size }, cx, cy - 220);
 characters.push({
-  x: bossSpawn.x, y: bossSpawn.y, size: ENEMY_SIZE, color: '#c62828', selected: false, isMoving: false,
-  playerControlled: false, hp: BOSS_HP_MAX, hpMax: BOSS_HP_MAX, label: 'B',
+  x: bossSpawn.x, y: bossSpawn.y, size: ENCOUNTERS[0].size, color: ENCOUNTERS[0].color,
+  selected: false, isMoving: false, playerControlled: false,
+  hp: ENCOUNTERS[0].hpMax, hpMax: ENCOUNTERS[0].hpMax, label: ENCOUNTERS[0].label, name: ENCOUNTERS[0].name,
   facingAngle: Math.PI / 2, // tourné vers le bas (zone de départ des personnages) -- voir Coup sournois
-  stats: { force: 24 }, // seule stat nécessaire : reprend le calcul de dégâts générique (updateCombat)
+  combatOverride: ENCOUNTERS[0].combat,
+  stats: { force: ENCOUNTERS[0].statValue }, // seule stat nécessaire au calcul de dégâts générique
 });
 
 const enemies = characters.filter((c) => !c.playerControlled);
@@ -171,58 +185,61 @@ const DEFAULT_COMBAT = { melee: true, stat: 'force' };
 const RANGED_ATTACK_RANGE = 220;
 const ATTACK_INTERVAL_MS = 2000;
 
+// Un ennemi (voir ENCOUNTERS) définit son propre profil de combat (combatOverride) puisqu'il n'a
+// pas de classe ; un personnage du joueur, lui, le tient de sa classe (CLASS_COMBAT).
 function combatProfile(character) {
-  return CLASS_COMBAT[character.className] || DEFAULT_COMBAT;
+  return character.combatOverride || CLASS_COMBAT[character.className] || DEFAULT_COMBAT;
 }
 
 function hitTestEnemyAt(x, y) {
   return enemies.find((e) => e.hp > 0 && isInsideCharacter(e, x, y)) || null;
 }
 
-function orderAttack(character, enemy) {
-  character.attackTarget = enemy;
-  const combat = combatProfile(character);
-  const dist = Math.hypot(character.x - enemy.x, character.y - enemy.y) || 1;
-  const dirX = (character.x - enemy.x) / dist;
-  const dirY = (character.y - enemy.y) / dist;
+// Déplace "attacker" pour pouvoir attaquer "target" : corps à corps -- marche jusqu'au contact
+// (resolveDestination l'arrête déjà tout seul juste à côté, comme pour toute destination tombant
+// sur un autre personnage) ; à distance -- s'approche seulement jusqu'à RANGED_ATTACK_RANGE si
+// trop loin, sinon ne bouge pas (déjà à portée, l'attaque commence sur place, voir updateCombat).
+// Utilisé aussi bien pour un personnage du joueur attaquant un ennemi (orderAttack) que pour un
+// ennemi attaquant un personnage (updateEnemyAI) -- la logique est identique des deux côtés.
+function approachForCombat(attacker, target) {
+  const combat = combatProfile(attacker);
+  const dist = Math.hypot(attacker.x - target.x, attacker.y - target.y) || 1;
+  const dirX = (attacker.x - target.x) / dist;
+  const dirY = (attacker.y - target.y) / dist;
 
   if (combat.melee) {
-    // Vise un point légèrement à l'intérieur de l'ennemi, dans la direction réelle du
-    // personnage (pas pile le centre) : resolveDestination le ramène de toute façon au contact,
+    // Vise un point légèrement à l'intérieur de la cible, dans la direction réelle de
+    // l'attaquant (pas pile le centre) : resolveDestination le ramène de toute façon au contact,
     // mais viser EXACTEMENT le centre est un cas à égalité parfaite entre les 4 bords, qui
-    // retombait donc toujours sur "à gauche de l'ennemi" quelle que soit la position de départ.
-    const nudge = Math.min(enemy.size / 2 - 1, 20);
-    startMove(character, enemy.x + dirX * nudge, enemy.y + dirY * nudge);
-    return;
+    // retombait donc toujours sur "à gauche de la cible" quelle que soit la position de départ.
+    const nudge = Math.min(target.size / 2 - 1, 20);
+    startMove(attacker, target.x + dirX * nudge, target.y + dirY * nudge);
+  } else if (dist > RANGED_ATTACK_RANGE) {
+    startMove(attacker, target.x + dirX * RANGED_ATTACK_RANGE, target.y + dirY * RANGED_ATTACK_RANGE);
   }
-
-  if (dist > RANGED_ATTACK_RANGE) {
-    startMove(character, enemy.x + dirX * RANGED_ATTACK_RANGE, enemy.y + dirY * RANGED_ATTACK_RANGE);
-  }
-  // Sinon déjà à portée : pas de déplacement, l'attaque commence sur place (voir updateCombat).
 }
 
-// IA du boss : choisit un personnage au hasard dès sa première évaluation et le garde comme
-// cible pour tout le combat (jamais de changement de cible tant qu'il est vivant). Marche vers
-// lui (corps à corps, comme un personnage sans sort à distance) tant qu'il n'est pas à portée --
-// comme la cible peut elle-même se déplacer entre-temps, le boss recalcule sa route à chaque
-// fois qu'il arrive quelque part sans être encore à portée, plutôt qu'une seule fois au départ.
-function updateBossAI(boss, now) {
-  if (boss.hp <= 0) return;
-  if (!boss.attackTarget) {
+function orderAttack(character, enemy) {
+  character.attackTarget = enemy;
+  approachForCombat(character, enemy);
+}
+
+// IA d'un ennemi (voir ENCOUNTERS) : choisit un personnage au hasard dès sa première évaluation
+// et le garde comme cible pour tout le combat (jamais de changement de cible tant qu'il est
+// vivant). S'approche pour l'attaquer (corps à corps ou à distance selon l'ennemi, voir
+// approachForCombat) tant qu'il n'est pas à portée -- comme la cible peut elle-même se déplacer
+// entre-temps, il recalcule sa route à chaque fois qu'il arrive quelque part sans être à portée.
+function updateEnemyAI(enemy, now) {
+  if (enemy.hp <= 0) return;
+  if (!enemy.attackTarget) {
     const alivePlayers = characters.filter((c) => c.playerControlled && c.hp > 0);
     if (alivePlayers.length === 0) return;
-    boss.attackTarget = alivePlayers[Math.floor(Math.random() * alivePlayers.length)];
+    enemy.attackTarget = alivePlayers[Math.floor(Math.random() * alivePlayers.length)];
   }
 
-  const target = boss.attackTarget;
-  if (boss.isMoving || isInRangeOf(boss, target)) return;
-
-  const dist = Math.hypot(boss.x - target.x, boss.y - target.y) || 1;
-  const dirX = (boss.x - target.x) / dist;
-  const dirY = (boss.y - target.y) / dist;
-  const nudge = Math.min(target.size / 2 - 1, 20);
-  startMove(boss, target.x + dirX * nudge, target.y + dirY * nudge);
+  const target = enemy.attackTarget;
+  if (enemy.isMoving || isInRangeOf(enemy, target)) return;
+  approachForCombat(enemy, target);
 }
 
 function nearestEnemyTo(character) {
@@ -916,10 +933,15 @@ function drawEnemyHealthBar(enemy) {
   ctx.lineWidth = 1;
   ctx.strokeRect(barX + 0.5, barY + 0.5, barWidth - 1, barHeight - 1);
 
-  ctx.font = '10px sans-serif';
-  ctx.fillStyle = '#ffffffcc';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'alphabetic';
+  if (enemy.name) {
+    ctx.font = 'bold 11px sans-serif';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(enemy.name, enemy.x, barY - 15);
+  }
+  ctx.font = '10px sans-serif';
+  ctx.fillStyle = '#ffffffcc';
   ctx.fillText(`${Math.max(enemy.hp, 0)}/${enemy.hpMax}`, enemy.x, barY - 3);
 }
 
@@ -1288,20 +1310,13 @@ function drawCharacterScene() {
 }
 
 // ------------------------------------------------------------
-// Scène "Monde" : une carte de progression -- un chemin reliant des ronds, chacun un combat, le
-// dernier étant le boss final. Un seul combat existe pour l'instant (le boss actuel), donc tous
-// les ronds mènent à la même rencontre ; le prochain pas naturel sera de leur donner un contenu
-// différent. Cliquer un rond débloqué (déjà atteint ou le prochain) relance ce combat à zéro
-// (voir resetCombatEncounter) et bascule sur la scène Combat ; le round suivant se débloque
-// quand le boss actuel tombe à 0 PV (déjà visible via sa croix de mort, voir drawCharacter).
+// Scène "Monde" : une carte de progression -- un chemin reliant des ronds, chacun un combat
+// différent (voir ENCOUNTERS), le dernier étant le boss final. Cliquer un rond débloqué (déjà
+// atteint ou le prochain) reconfigure l'unique emplacement d'ennemi du jeu avec les stats de ce
+// combat (voir resetCombatEncounter) et bascule sur la scène Combat ; le rond suivant se débloque
+// quand l'ennemi actuel tombe à 0 PV (déjà visible via sa croix de mort, voir drawCharacter).
 // ------------------------------------------------------------
-const WORLD_LEVELS = [
-  { label: '1' },
-  { label: '2' },
-  { label: '3' },
-  { label: '4' },
-  { label: 'B', isBoss: true },
-];
+const WORLD_LEVELS = ENCOUNTERS.map((encounter) => ({ label: encounter.label, isBoss: !!encounter.isBoss }));
 let worldProgress = 0; // index du prochain rond à vaincre ; les index < ça sont déjà complétés
 let currentWorldLevel = 0; // rond correspondant au combat affiché dans la scène Combat
 let combatOutcomeHandled = false; // évite de débloquer le rond suivant en boucle une fois le boss tombé
@@ -1322,19 +1337,29 @@ function worldLevelPositions() {
   });
 }
 
-// Remet l'unique combat actuel à zéro : PV/mana/bouclier/altérations/cooldowns des personnages
-// et du boss réinitialisés, tout le monde replacé à sa position de départ -- une "nouvelle"
-// rencontre à chaque clic sur un rond, plutôt que de reprendre les dégâts du combat précédent.
-function resetCombatEncounter() {
-  const boss = enemies[0];
-  if (boss) {
-    boss.hp = boss.hpMax;
-    boss.attackTarget = null;
-    boss.dotEffects = [];
-    boss.isMoving = false;
-    boss.pathPoints = [];
-    boss.x = bossSpawn.x;
-    boss.y = bossSpawn.y;
+// Reconfigure l'unique emplacement d'ennemi du jeu avec les stats du combat choisi (voir
+// ENCOUNTERS) et remet tout le monde à zéro : PV/mana/bouclier/altérations/cooldowns des
+// personnages et de l'ennemi réinitialisés, tout replacé à sa position de départ -- un "nouveau"
+// combat à chaque clic sur un rond, plutôt que de reprendre les dégâts du combat précédent.
+function resetCombatEncounter(levelIndex) {
+  const encounter = ENCOUNTERS[levelIndex];
+  const enemy = enemies[0];
+  if (enemy && encounter) {
+    enemy.name = encounter.name;
+    enemy.label = encounter.label;
+    enemy.color = encounter.color;
+    enemy.size = encounter.size;
+    enemy.hpMax = encounter.hpMax;
+    enemy.hp = encounter.hpMax;
+    enemy.combatOverride = encounter.combat;
+    enemy.stats = { force: encounter.statValue };
+    enemy.attackTarget = null;
+    enemy.dotEffects = [];
+    enemy.isMoving = false;
+    enemy.pathPoints = [];
+    const spawn = clampPointToField({ size: encounter.size }, cx, cy - 220);
+    enemy.x = spawn.x;
+    enemy.y = spawn.y;
   }
 
   let i = 0;
@@ -1358,7 +1383,7 @@ function resetCombatEncounter() {
 function enterCombatLevel(index) {
   currentWorldLevel = index;
   combatOutcomeHandled = false;
-  resetCombatEncounter();
+  resetCombatEncounter(index);
   currentScene = 'combat';
 }
 
@@ -1450,7 +1475,7 @@ function draw() {
     for (const character of characters) drawCharacter(character);
     for (const enemy of enemies) drawEnemyHealthBar(enemy);
 
-    // Trait pointillé du boss vers sa cible (voir updateBossAI) -- juste pour que le joueur
+    // Trait pointillé de l'ennemi vers sa cible (voir updateEnemyAI) -- juste pour que le joueur
     // comprenne qui il poursuit, ne pilote aucune logique.
     for (const enemy of enemies) {
       if (!enemy.attackTarget || enemy.attackTarget.hp <= 0) continue;
@@ -1530,7 +1555,7 @@ function loop(now) {
   const dt = Math.min(now - lastFrameTime, 100);
   lastFrameTime = now;
 
-  for (const enemy of enemies) updateBossAI(enemy, now);
+  for (const enemy of enemies) updateEnemyAI(enemy, now);
   for (const character of characters) {
     if (character.playerControlled) updateAutoPlay(character);
   }
