@@ -6,7 +6,7 @@
 // Ce numéro est généré automatiquement à chaque publication (voir publish-web.ps1, horodatage)
 // plutôt que changé à la main : un appareil ayant déjà installé la PWA ne récupère PAS
 // automatiquement les nouveaux fichiers tant que ce nom ne change pas.
-const CACHE_NAME = 'scrpg-20260914164900';
+const CACHE_NAME = 'scrpg-20260914175946';
 const ASSETS = [
   './',
   './index.html',

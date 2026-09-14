@@ -68,9 +68,12 @@ const FIRST_NAMES = [
   'Sarah', 'Maxime', 'Julie', 'Thomas', 'Laura', 'Antoine', 'Marie', 'Lucas', 'Inès', 'Adam',
   'Océane', 'Noah', 'Zoé', 'Gabriel', 'Lina', 'Ethan', 'Jade', 'Léo', 'Anna', 'Mathis',
 ];
-// Limité aux 3 classes qui ont des compétences définies (voir SKILLS/CLASS_SKILLS) -- les autres
-// (couleurs déjà définies ci-dessous) rejoindront la sélection quand leurs sorts le seront aussi.
-const CHARACTER_CLASSES = ['Mage', 'Voleur', 'Paladin'];
+// Les 11 classes ont maintenant toutes 4 compétences définies (voir SKILLS/CLASS_SKILLS) : les 3
+// personnages du groupe tirent leur classe au hasard parmi elles toutes.
+const CHARACTER_CLASSES = [
+  'Guerrier', 'Barbare', 'Paladin', 'Voleur', 'Mage', 'Pyromane',
+  'Chasseur', 'Druide', 'Prêtre', 'Sorcier', 'Chaman',
+];
 
 // Couleur de chaque classe (demande utilisateur explicite) -- le carré du personnage prend
 // directement la couleur de sa classe (voir sa création plus bas), plutôt qu'une couleur par
@@ -85,7 +88,7 @@ const CLASS_COLORS = {
   Pyromane: '#fb8c00',
   Chasseur: '#8bc34a',
   Druide: '#1b5e20',
-  Pretre: '#f5f5f5',
+  'Prêtre': '#f5f5f5',
   Sorcier: '#3a3a3a',
   Chaman: '#ec407a',
 };
@@ -227,7 +230,12 @@ const CLASS_COMBAT = {
   Barbare: { melee: true, stat: 'force' },
   Voleur: { melee: true, stat: 'force' },
   Mage: { melee: false, stat: 'intelligence' },
-  Archère: { melee: false, stat: 'force' },
+  Pyromane: { melee: false, stat: 'intelligence' },
+  Chasseur: { melee: false, stat: 'force' },
+  Druide: { melee: false, stat: 'intelligence' },
+  'Prêtre': { melee: false, stat: 'intelligence' },
+  Sorcier: { melee: false, stat: 'intelligence' },
+  Chaman: { melee: true, stat: 'intelligence' }, // magie au corps à corps
 };
 const DEFAULT_COMBAT = { melee: true, stat: 'force' };
 const RANGED_ATTACK_RANGE = 220;
@@ -387,7 +395,13 @@ function nearestEnemyTo(character) {
 // pas juste "au cas où", pour éviter de les gâcher hors de propos. Lumière divine (soin) n'en
 // fait volontairement pas partie : le besoin de soin dépend de l'état du groupe, pas seulement du
 // lanceur, et est déjà évalué correctement par lowestHpAlly.
-const AUTO_DEFENSIVE_SKILLS = new Set(['murSacre', 'formeDOmbre', 'dephasage']);
+// Carapace d'écorce n'y figure pas : elle protège un allié, pas forcément le lanceur -- se
+// déclenche donc comme Lumière divine (dès que disponible, sans condition de "je viens d'être touché").
+const AUTO_DEFENSIVE_SKILLS = new Set([
+  'murSacre', 'formeDOmbre', 'dephasage', 'postureDefensive', 'peauDePierre',
+  'voileDeGivre', 'bouclierDeFlammes', 'repliTactique',
+  'voileProtecteur', 'pacteDeProtection', 'boucliersDesAncetres',
+]);
 const AUTO_DEFENSIVE_WINDOW_MS = 4000;
 const AUTO_ABILITY_INTERVAL_MS = 1000; // délai mini entre deux compétences lancées par l'IA
 
@@ -448,7 +462,10 @@ function updateCombat(character, now) {
     return;
   }
   if (character.isMoving) return;
-  if (now - (character.lastAttackAt || 0) < ATTACK_INTERVAL_MS) return;
+  if ((character.stunnedUntil || 0) > now) return; // étourdi (Gel) : ne peut pas non plus attaquer
+  // Cadence d'attaque ralentie (Éclat de glace).
+  const atkMultiplier = (character.atkSlowUntil || 0) > now ? (character.atkSlowMultiplier || 1) : 1;
+  if (now - (character.lastAttackAt || 0) < ATTACK_INTERVAL_MS * atkMultiplier) return;
 
   character.lastAttackAt = now;
   const combat = combatProfile(character);
@@ -553,27 +570,70 @@ function dealDamage(target, amount, rgb, source, isCrit, skillLabel) {
 
   if (!target.playerControlled && combatPhase !== 'active') combatPhase = 'active';
 
-  let remaining = amount;
+  // Réduction de dégâts subis (Posture défensive du Guerrier, Peau de pierre du Barbare...) et
+  // bonus de dégâts subis (Frénésie du Barbare sur soi, Frappe des esprits du Chaman sur la
+  // cible) -- les deux peuvent cohabiter (ex. vulnérable ET protégé en même temps).
+  const reduction = (target.damageReductionUntil || 0) > now ? (target.damageReductionFactor || 0) : 0;
+  const takenBonus = (target.damageTakenBonusUntil || 0) > now ? (target.damageTakenBonusFactor || 0) : 0;
+  const afterReduction = Math.round(amount * (1 - reduction) * (1 + takenBonus));
+
+  let remaining = afterReduction;
   if (target.shieldHp > 0) {
     const absorbed = Math.min(target.shieldHp, remaining);
     target.shieldHp -= absorbed;
     remaining -= absorbed;
+
+    // Bouclier de flammes (Pyromane) : renvoie une brûlure à quiconque frappe le bouclier.
+    if (absorbed > 0 && target.shieldReflectBurn && source) {
+      applyDot(source, {
+        kind: 'burn', ticksLeft: 2, tickIntervalMs: 1000, rgb: '255, 87, 34',
+        skillName: 'Bouclier de flammes', source: target,
+        damagePerTick: Math.max(1, Math.round(absorbed * 0.2)),
+      });
+    }
+    // Pacte de protection (Sorcier) : accumule les dégâts absorbés pour les renvoyer à l'expiration.
+    if (absorbed > 0 && target.shieldVengeful) {
+      target.shieldAbsorbedTotal = (target.shieldAbsorbedTotal || 0) + absorbed;
+      target.lastShieldAttacker = source;
+    }
+    // Voile de givre (Mage) : ralentit quiconque frappe le bouclier.
+    if (absorbed > 0 && target.shieldReflectSlow && source) {
+      source.slowMultiplier = 0.5;
+      source.slowUntil = now + 2000;
+    }
   }
   target.hp = Math.max(0, target.hp - remaining);
   spawnFloatingText(
     target.x + (Math.random() - 0.5) * 24, target.y - target.size / 2 - 34,
-    `-${amount}${isCrit ? '!' : ''}`, isCrit ? '255, 213, 79' : rgb
+    `-${afterReduction}${isCrit ? '!' : ''}`, isCrit ? '255, 213, 79' : rgb
   );
   // Sert à l'IA pour savoir si elle vient de se faire attaquer (voir AUTO_DEFENSIVE_SKILLS).
   if (target.playerControlled) target.lastDamageTakenAt = now;
+  // Posture défensive (Guerrier) : encaisser un coup pendant qu'elle est active génère de la Rage.
+  if (target.playerControlled && (target.gainsRageOnHitUntil || 0) > now) {
+    target.rage = Math.min(5, (target.rage || 0) + 1);
+  }
 
   if (!target.playerControlled && source && source.playerControlled) {
-    addThreat(source, amount, now); // le joueur inflige des dégâts à l'ennemi
-    recordDamageStat(source.index, 'dealt', amount, skillLabel, target.name || 'Ennemi');
+    addThreat(source, afterReduction, now); // le joueur inflige des dégâts à l'ennemi
+    recordDamageStat(source.index, 'dealt', afterReduction, skillLabel, target.name || 'Ennemi');
   } else if (target.playerControlled && source && !source.playerControlled) {
-    addThreat(target, amount, now); // le joueur subit des dégâts de l'ennemi
-    recordDamageStat(target.index, 'taken', amount, skillLabel, source.name || 'Ennemi');
+    addThreat(target, afterReduction, now); // le joueur subit des dégâts de l'ennemi
+    recordDamageStat(target.index, 'taken', afterReduction, skillLabel, source.name || 'Ennemi');
   }
+
+  // Malédiction (Sorcier) : si la cible meurt maudite, explosion de zone (dégâts à tous les
+  // autres ennemis -- prêt pour de futurs combats à plusieurs ennemis).
+  if (target.hp <= 0 && target.cursedBy && target.cursedBy.hp > 0 && !target.playerControlled) {
+    const caster = target.cursedBy;
+    target.cursedBy = null;
+    const { amount: burst } = computeStatDamage(caster, 'intelligence', 0.6);
+    for (const other of enemies) {
+      if (other === target || other.hp <= 0) continue;
+      dealDamage(other, burst, '81, 45, 168', caster, false, 'Malédiction (explosion)');
+    }
+  }
+
   return true;
 }
 
@@ -586,8 +646,15 @@ function rollCrit(character) {
   return Math.random() < chance;
 }
 
+// Multiplicateur de dégâts SORTANTS actif sur "character" en ce moment (Cri de rage du Guerrier,
+// Frénésie du Barbare...) -- les buffs de ce type se posent tous sur damageOutputMultiplier /
+// damageOutputUntil, un seul actif à la fois (le plus récent remplace le précédent).
+function damageOutputMultiplier(character, now) {
+  return (character.damageOutputUntil || 0) > now ? (character.damageOutputMultiplier || 1) : 1;
+}
+
 function computeStatDamage(character, statKey, percent) {
-  const base = Math.round(((character.stats && character.stats[statKey]) || 0) * percent);
+  const base = Math.round(((character.stats && character.stats[statKey]) || 0) * percent * damageOutputMultiplier(character, performance.now()));
   const crit = rollCrit(character);
   return { amount: crit ? base * 2 : base, crit };
 }
@@ -606,6 +673,11 @@ function healCharacter(target, amount, source) {
 function applyDot(target, spec) {
   if (!target.dotEffects) target.dotEffects = [];
   target.dotEffects.push({ ...spec, nextTickAt: performance.now() + spec.tickIntervalMs });
+  // Empile un compteur de poison distinct de la liste de DOT elle-même (voir Épines
+  // empoisonnées, qui consomme ce compteur plutôt que les effets à tick directement).
+  if (spec.kind === 'poison') {
+    target.poisonStacks = Math.min(5, (target.poisonStacks || 0) + 1);
+  }
 }
 
 function updateDotEffects(character, now) {
@@ -621,11 +693,21 @@ function updateDotEffects(character, now) {
   }
 }
 
-// Expire le bouclier de Mur sacré une fois sa durée écoulée (sa quantité de PV absorbés, elle,
-// est déjà consommée au fil des coups reçus par dealDamage ci-dessus).
+// Expire un bouclier (Mur sacré, Bouclier de flammes, Pacte de protection...) une fois sa durée
+// écoulée -- sa quantité de PV absorbés, elle, est déjà consommée au fil des coups reçus par
+// dealDamage ci-dessus. Pacte de protection (Sorcier) est vengeur : à l'expiration, renvoie les
+// dégâts accumulés pendant qu'il tenait à quiconque l'a frappé en dernier.
 function updateShield(character, now) {
   if (character.shieldHp > 0 && now >= (character.shieldExpiresAt || 0)) {
     character.shieldHp = 0;
+  }
+  if (character.shieldVengeful && now >= (character.shieldExpiresAt || 0) && character.shieldAbsorbedTotal > 0) {
+    const target = character.lastShieldAttacker;
+    const amount = character.shieldAbsorbedTotal;
+    character.shieldVengeful = false;
+    character.shieldAbsorbedTotal = 0;
+    character.lastShieldAttacker = null;
+    if (target && target.hp > 0) dealDamage(target, amount, '81, 45, 168', character, false, 'Pacte de protection (renvoi)');
   }
 }
 
@@ -647,53 +729,125 @@ function lowestHpAlly() {
 }
 
 const SKILL_COOLDOWN_MS = 20000; // même recharge pour tous les sorts, demande utilisateur explicite
+const ZONE_RADIUS = 220; // rayon des sorts de zone centrés sur le lanceur (ex. Cercle sacré)
 
 const SKILLS = {
-  bouleDeFeu: {
-    id: 'bouleDeFeu', name: 'Boule de feu', shortLabel: 'Boule\nde feu', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+  // ============================== GUERRIER (Force, mêlée) ==============================
+  // Ressource Rage (character.rage, 0-5 stacks) : Frappe rageuse/Tourbillon/Posture défensive en
+  // génèrent, Cri de rage la consomme entièrement pour un buff de dégâts proportionnel.
+  frappeRageuse: {
+    id: 'frappeRageuse', name: 'Frappe rageuse', shortLabel: 'Frappe\nrageuse', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character, target) {
-      const { amount, crit } = computeStatDamage(character, 'intelligence', 0.9);
-      // La brûlure ne se pose que si le coup a réellement porté (pas esquivé/déphasage).
-      if (dealDamage(target, amount, '255, 112, 67', character, crit, 'Boule de feu')) {
-        applyDot(target, {
-          kind: 'burn', ticksLeft: 3, tickIntervalMs: 1000, rgb: '255, 87, 34', source: character,
-          skillName: 'Boule de feu (brûlure)',
-          damagePerTick: Math.round(character.stats.intelligence * 0.15),
-        });
+      const { amount, crit } = computeStatDamage(character, 'force', 0.9);
+      dealDamage(target, amount, '158, 158, 158', character, crit, 'Frappe rageuse');
+      character.rage = Math.min(5, (character.rage || 0) + 1);
+    },
+  },
+  tourbillon: {
+    id: 'tourbillon', name: 'Tourbillon', shortLabel: 'Tourbillon', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character) {
+      for (const enemy of enemies) {
+        if (enemy.hp <= 0) continue;
+        const { amount, crit } = computeStatDamage(character, 'force', 0.6);
+        dealDamage(enemy, amount, '158, 158, 158', character, crit, 'Tourbillon');
+        character.rage = Math.min(5, (character.rage || 0) + 1);
       }
     },
   },
-  traitDeGivre: {
-    id: 'traitDeGivre', name: 'Trait de givre', shortLabel: 'Trait de\ngivre', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
-    cast(character, target) {
-      const { amount, crit } = computeStatDamage(character, 'intelligence', 0.7);
-      // Ralentit les déplacements de la cible (si le coup porte) -- sans effet visible sur le
-      // boss actuel, qui ne se déplace jamais, mais prêt pour un futur ennemi mobile.
-      if (dealDamage(target, amount, '79, 195, 247', character, crit, 'Trait de givre')) {
-        target.slowMultiplier = 0.5;
-        target.slowUntil = performance.now() + 3000;
-      }
+  postureDefensive: {
+    id: 'postureDefensive', name: 'Posture défensive', shortLabel: 'Posture\ndéf.', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character) {
+      const now = performance.now();
+      character.damageReductionFactor = 0.4;
+      character.damageReductionUntil = now + 4000;
+      character.gainsRageOnHitUntil = now + 4000; // chaque coup encaissé pendant ce temps génère de la Rage
     },
   },
-  coupSournois: {
-    id: 'coupSournois', name: 'Coup sournois', shortLabel: 'Coup\nsournois', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+  criDeRage: {
+    id: 'criDeRage', name: 'Cri de rage', shortLabel: 'Cri de\nrage', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character) {
+      const stacks = character.rage || 0;
+      character.rage = 0;
+      character.damageOutputMultiplier = 1 + stacks * 0.15;
+      character.damageOutputUntil = performance.now() + 5000;
+    },
+  },
+
+  // ============================== BARBARE (Force, mêlée) ==============================
+  eventration: {
+    id: 'eventration', name: 'Éventration', shortLabel: 'Éventration', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character, target) {
+      character.hp = Math.max(1, character.hp - Math.round(character.hpMax * 0.08));
       const { amount, crit } = computeStatDamage(character, 'force', 1.2);
-      const damage = isBehind(character, target) ? amount * 2 : amount;
-      dealDamage(target, damage, '186, 104, 200', character, crit, 'Coup sournois');
+      const finalAmount = target.hp / target.hpMax < 0.5 ? amount * 2 : amount;
+      dealDamage(target, finalAmount, '229, 57, 53', character, crit, 'Éventration');
     },
   },
-  surinage: {
-    id: 'surinage', name: 'Surinage', shortLabel: 'Surinage', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
-    cast(character, target) {
-      const { amount, crit } = computeStatDamage(character, 'force', 0.7);
-      if (dealDamage(target, amount, '229, 57, 53', character, crit, 'Surinage')) {
-        applyDot(target, {
-          kind: 'bleed', ticksLeft: 4, tickIntervalMs: 800, rgb: '229, 57, 53', source: character,
-          skillName: 'Surinage (saignement)',
-          damagePerTick: Math.round(character.stats.force * 0.12),
-        });
+  cercleDeSang: {
+    id: 'cercleDeSang', name: 'Cercle de sang', shortLabel: 'Cercle\nde sang', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character) {
+      character.hp = Math.max(1, character.hp - Math.round(character.hpMax * 0.15));
+      for (const enemy of enemies) {
+        if (enemy.hp <= 0) continue;
+        const { amount, crit } = computeStatDamage(character, 'force', 0.7);
+        dealDamage(enemy, amount, '229, 57, 53', character, crit, 'Cercle de sang');
       }
+    },
+  },
+  peauDePierre: {
+    id: 'peauDePierre', name: 'Peau de pierre', shortLabel: 'Peau de\npierre', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character) {
+      character.damageReductionFactor = 0.3;
+      character.damageReductionUntil = performance.now() + 5000;
+      healCharacter(character, Math.round(character.hpMax * 0.1), character); // compense les PV sacrifiés
+    },
+  },
+  frenesie: {
+    id: 'frenesie', name: 'Frénésie', shortLabel: 'Frénésie', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character) {
+      const now = performance.now();
+      const desperate = character.hp / character.hpMax < 0.5;
+      character.damageOutputMultiplier = desperate ? 1.5 : 1.3; // plus dangereux, plus fort
+      character.damageOutputUntil = now + 5000;
+      character.damageTakenBonusFactor = 0.2;
+      character.damageTakenBonusUntil = now + 5000;
+    },
+  },
+
+  // ============================== PALADIN (Force/Savoir, mêlée) ==============================
+  chatiment: {
+    id: 'chatiment', name: 'Châtiment', shortLabel: 'Châtiment', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character, target) {
+      const now = performance.now();
+      const empowered = character.shieldHp > 0 && (character.shieldExpiresAt || 0) > now;
+      const { amount, crit } = computeStatDamage(character, 'force', empowered ? 1.5 : 1.1);
+      dealDamage(target, amount, '255, 193, 7', character, crit, 'Châtiment');
+    },
+  },
+  vagueSacree: {
+    id: 'vagueSacree', name: 'Vague sacrée', shortLabel: 'Vague\nsacrée', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character) {
+      let totalDealt = 0;
+      for (const enemy of enemies) {
+        if (enemy.hp <= 0) continue;
+        const { amount, crit } = computeStatDamage(character, 'force', 0.5);
+        if (dealDamage(enemy, amount, '255, 193, 7', character, crit, 'Vague sacrée')) totalDealt += amount;
+      }
+      if (totalDealt > 0) healCharacter(character, Math.round(totalDealt * 0.4), character);
+    },
+  },
+  murSacre: {
+    id: 'murSacre', name: 'Mur sacré', shortLabel: 'Mur\nsacré', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character, target) {
+      // Bouclier + provocation (fusionnés) : le Paladin encaisse pendant qu'il force l'ennemi à
+      // le cibler, quelle que soit la menace des autres (voir updateEnemyAI).
+      const shield = 20 + Math.round(character.stats.force * 1.2);
+      character.shieldHp = shield;
+      character.shieldMax = shield;
+      character.shieldExpiresAt = performance.now() + 6000;
+      addThreat(character, 100, performance.now());
+      target.tauntedBy = character;
+      target.tauntUntil = performance.now() + 3000;
     },
   },
   lumiereDivine: {
@@ -703,48 +857,438 @@ const SKILLS = {
       healCharacter(lowestHpAlly() || character, heal, character);
     },
   },
-  murSacre: {
-    id: 'murSacre', name: 'Mur sacré', shortLabel: 'Mur\nsacré', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
-    cast(character) {
-      const shield = 20 + Math.round(character.stats.force * 1.2);
-      character.shieldHp = shield;
-      character.shieldMax = shield;
-      character.shieldExpiresAt = performance.now() + 6000;
+
+  // ============================== VOLEUR (Force, mêlée) ==============================
+  coupSournois: {
+    id: 'coupSournois', name: 'Coup sournois', shortLabel: 'Coup\nsournois', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character, target) {
+      const now = performance.now();
+      const { amount, crit } = computeStatDamage(character, 'force', 1.2);
+      // Dans le dos, ou garanti par Forme d'ombre (consommé une seule fois), ou si la cible
+      // saigne déjà (Surinage/Fauchage) : dégâts doublés.
+      const guaranteed = (character.guaranteedBackstabUntil || 0) > now;
+      const bleeding = (target.dotEffects || []).some((d) => d.kind === 'bleed');
+      const damage = isBehind(character, target) || guaranteed || bleeding ? amount * 2 : amount;
+      if (guaranteed) character.guaranteedBackstabUntil = 0;
+      dealDamage(target, damage, '186, 104, 200', character, crit, 'Coup sournois');
     },
   },
-  fierteDuJuste: {
-    id: 'fierteDuJuste', name: 'Fierté du juste', shortLabel: 'Fierté\ndu juste', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
-    cast(character, target) {
-      // Provoque : force l'ennemi à cibler ce personnage pendant 3s, quelle que soit la menace
-      // des autres (voir updateEnemyAI) -- et génère une grosse menace d'un coup pour que ça
-      // tienne encore une fois la provocation retombée.
-      addThreat(character, 100, performance.now());
-      target.tauntedBy = character;
-      target.tauntUntil = performance.now() + 3000;
+  fauchage: {
+    id: 'fauchage', name: 'Fauchage', shortLabel: 'Fauchage', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character) {
+      for (const enemy of enemies) {
+        if (enemy.hp <= 0) continue;
+        const { amount, crit } = computeStatDamage(character, 'force', 0.6);
+        if (dealDamage(enemy, amount, '186, 104, 200', character, crit, 'Fauchage')) {
+          applyDot(enemy, {
+            kind: 'bleed', ticksLeft: 3, tickIntervalMs: 800, rgb: '229, 57, 53', source: character,
+            skillName: 'Fauchage (saignement)', damagePerTick: Math.round(character.stats.force * 0.1),
+          });
+        }
+      }
     },
   },
   formeDOmbre: {
     id: 'formeDOmbre', name: "Forme d'ombre", shortLabel: "Forme\nd'ombre", targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character) {
-      // 25% d'esquiver complètement une attaque (voir dealDamage), pendant 5s.
+      const now = performance.now();
       character.dodgeChance = 0.25;
-      character.dodgeUntil = performance.now() + 5000;
+      character.dodgeUntil = now + 5000;
+      // La prochaine attaque après Forme d'ombre compte comme "dans le dos" (voir Coup sournois).
+      character.guaranteedBackstabUntil = now + 5000;
     },
   },
-  dephasage: {
-    id: 'dephasage', name: 'Déphasage', shortLabel: 'Dépha-\nsage', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+  surinage: {
+    id: 'surinage', name: 'Surinage', shortLabel: 'Surinage', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character, target) {
+      const { amount, crit } = computeStatDamage(character, 'force', 0.7);
+      if (dealDamage(target, amount, '229, 57, 53', character, crit, 'Surinage')) {
+        applyDot(target, {
+          kind: 'bleed', ticksLeft: 4, tickIntervalMs: 800, rgb: '229, 57, 53', source: character,
+          skillName: 'Surinage (saignement)', damagePerTick: Math.round(character.stats.force * 0.12),
+        });
+      }
+    },
+  },
+
+  // ============================== MAGE (Intelligence, distance) -- glace uniquement ==============================
+  eclatDeGlace: {
+    id: 'eclatDeGlace', name: 'Éclat de glace', shortLabel: 'Éclat\nde glace', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character, target) {
+      const { amount, crit } = computeStatDamage(character, 'intelligence', 0.8);
+      if (dealDamage(target, amount, '79, 195, 247', character, crit, 'Éclat de glace')) {
+        const now = performance.now();
+        target.slowMultiplier = 0.7;
+        target.slowUntil = now + 2500;
+        target.atkSlowMultiplier = 1.4; // cadence d'attaque ralentie
+        target.atkSlowUntil = now + 2500;
+      }
+    },
+  },
+  novaDeGivre: {
+    id: 'novaDeGivre', name: 'Nova de givre', shortLabel: 'Nova de\ngivre', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character) {
-      // Insensible à tout dégât/effet pendant 5s, mais ne peut plus non plus en infliger (voir
-      // dealDamage) -- le déplacement, lui, n'est pas concerné (rien dans updateMove n'en dépend).
-      character.phaseUntil = performance.now() + 5000;
+      for (const enemy of enemies) {
+        if (enemy.hp <= 0) continue;
+        const { amount, crit } = computeStatDamage(character, 'intelligence', 0.5);
+        if (dealDamage(enemy, amount, '79, 195, 247', character, crit, 'Nova de givre')) {
+          enemy.slowMultiplier = 0.6;
+          enemy.slowUntil = performance.now() + 2500;
+        }
+      }
+    },
+  },
+  voileDeGivre: {
+    id: 'voileDeGivre', name: 'Voile de givre', shortLabel: 'Voile de\ngivre', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character) {
+      const shield = 15 + Math.round(character.stats.intelligence * 1.0);
+      character.shieldHp = shield;
+      character.shieldMax = shield;
+      character.shieldExpiresAt = performance.now() + 6000;
+      character.shieldReflectSlow = true;
+    },
+  },
+  gel: {
+    id: 'gel', name: 'Gel', shortLabel: 'Gel', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character, target) {
+      const now = performance.now();
+      const alreadySlowed = (target.slowUntil || 0) > now;
+      if (alreadySlowed) {
+        const { amount, crit } = computeStatDamage(character, 'intelligence', 0.3);
+        dealDamage(target, amount, '129, 212, 250', character, crit, 'Gel');
+        target.stunnedUntil = now + 2000; // immobilisation totale : ne bouge plus, n'attaque plus
+      } else {
+        const { amount, crit } = computeStatDamage(character, 'intelligence', 0.2);
+        if (dealDamage(target, amount, '129, 212, 250', character, crit, 'Gel')) {
+          target.slowMultiplier = 0.5;
+          target.slowUntil = now + 2000;
+        }
+      }
+    },
+  },
+
+  // ============================== PYROMANE (Intelligence, distance) -- feu uniquement ==============================
+  bouleDeFeu: {
+    id: 'bouleDeFeu', name: 'Boule de feu', shortLabel: 'Boule\nde feu', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character, target) {
+      const { amount, crit } = computeStatDamage(character, 'intelligence', 0.7);
+      if (dealDamage(target, amount, '255, 112, 67', character, crit, 'Boule de feu')) {
+        applyDot(target, {
+          kind: 'burn', ticksLeft: 3, tickIntervalMs: 1000, rgb: '255, 87, 34', source: character,
+          skillName: 'Boule de feu (brûlure)', damagePerTick: Math.round(character.stats.intelligence * 0.15),
+        });
+      }
+    },
+  },
+  pluieDeFeu: {
+    id: 'pluieDeFeu', name: 'Pluie de feu', shortLabel: 'Pluie de\nfeu', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character) {
+      for (const enemy of enemies) {
+        if (enemy.hp <= 0) continue;
+        const { amount, crit } = computeStatDamage(character, 'intelligence', 0.4);
+        if (dealDamage(enemy, amount, '255, 112, 67', character, crit, 'Pluie de feu')) {
+          applyDot(enemy, {
+            kind: 'burn', ticksLeft: 2, tickIntervalMs: 1000, rgb: '255, 87, 34', source: character,
+            skillName: 'Pluie de feu (brûlure)', damagePerTick: Math.round(character.stats.intelligence * 0.1),
+          });
+        }
+      }
+    },
+  },
+  bouclierDeFlammes: {
+    id: 'bouclierDeFlammes', name: 'Bouclier de flammes', shortLabel: 'Bouclier\nflammes', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character) {
+      const shield = 15 + Math.round(character.stats.intelligence * 1.0);
+      character.shieldHp = shield;
+      character.shieldMax = shield;
+      character.shieldExpiresAt = performance.now() + 6000;
+      character.shieldReflectBurn = true;
+    },
+  },
+  explosion: {
+    id: 'explosion', name: 'Explosion', shortLabel: 'Explosion', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character, target) {
+      // Consomme toutes les brûlures actives sur la cible (posées par n'importe quel sort du
+      // Pyromane) pour un gros burst immédiat, en plus des dégâts de base.
+      const burns = (target.dotEffects || []).filter((d) => d.kind === 'burn');
+      let consumed = 0;
+      for (const dot of burns) consumed += dot.ticksLeft * dot.damagePerTick;
+      target.dotEffects = (target.dotEffects || []).filter((d) => d.kind !== 'burn');
+
+      const { amount, crit } = computeStatDamage(character, 'intelligence', 0.3);
+      dealDamage(target, amount + consumed, '255, 87, 34', character, crit, 'Explosion');
+    },
+  },
+
+  // ============================== CHASSEUR (Force, distance) ==============================
+  tirPercant: {
+    id: 'tirPercant', name: 'Tir perçant', shortLabel: 'Tir\nperçant', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character, target) {
+      const now = performance.now();
+      const dist = Math.hypot(character.x - target.x, character.y - target.y);
+      const distBonus = Math.min(0.5, dist / 440); // jusqu'à +50% à longue portée
+      const markBonus = (target.huntersMarkUntil || 0) > now ? 0.15 : 0; // synergie avec Piège à ours
+      const { amount, crit } = computeStatDamage(character, 'force', 0.9 * (1 + distBonus + markBonus));
+      dealDamage(target, amount, '139, 195, 74', character, crit, 'Tir perçant');
+    },
+  },
+  tirEnRafale: {
+    id: 'tirEnRafale', name: 'Tir en rafale', shortLabel: 'Tir en\nrafale', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character, target) {
+      // Pas d'autre ennemi disponible pour l'instant : simule le rebond par des tirs successifs
+      // dégressifs sur la même cible, prêt à viser d'autres ennemis quand il y en aura plusieurs.
+      let mult = 0.8;
+      for (let i = 0; i < 3 && target.hp > 0; i++) {
+        const { amount, crit } = computeStatDamage(character, 'force', mult);
+        dealDamage(target, amount, '139, 195, 74', character, crit, 'Tir en rafale');
+        mult *= 0.6;
+      }
+    },
+  },
+  repliTactique: {
+    id: 'repliTactique', name: 'Repli tactique', shortLabel: 'Repli\ntactique', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character) {
+      const now = performance.now();
+      character.dodgeChance = 1;
+      character.dodgeUntil = now + 1000; // immunité brève
+      const threat = nearestEnemyTo(character);
+      if (threat) {
+        const dist = Math.hypot(character.x - threat.x, character.y - threat.y) || 1;
+        const dirX = (character.x - threat.x) / dist, dirY = (character.y - threat.y) / dist;
+        startMove(character, character.x + dirX * 140, character.y + dirY * 140);
+      }
+    },
+  },
+  piegeAOurs: {
+    id: 'piegeAOurs', name: 'Piège à ours', shortLabel: 'Piège\nà ours', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character, target) {
+      const dist = Math.hypot(character.x - target.x, character.y - target.y);
+      const distBonus = Math.min(0.6, dist / 440);
+      const { amount, crit } = computeStatDamage(character, 'force', 0.7 * (1 + distBonus));
+      dealDamage(target, amount, '139, 195, 74', character, crit, 'Piège à ours');
+      target.huntersMarkUntil = performance.now() + 6000; // marque : bonus pour Tir perçant ensuite
+    },
+  },
+
+  // ============================== DRUIDE (Intelligence, distance) ==============================
+  morsureVenimeuse: {
+    id: 'morsureVenimeuse', name: 'Morsure venimeuse', shortLabel: 'Morsure\nvenim.', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character, target) {
+      const { amount, crit } = computeStatDamage(character, 'intelligence', 0.6);
+      if (dealDamage(target, amount, '124, 179, 66', character, crit, 'Morsure venimeuse')) {
+        applyDot(target, {
+          kind: 'poison', ticksLeft: 4, tickIntervalMs: 1000, rgb: '124, 179, 66', source: character,
+          skillName: 'Morsure venimeuse (poison)', damagePerTick: Math.round(character.stats.intelligence * 0.12),
+        });
+      }
+    },
+  },
+  epinesEmpoisonnees: {
+    id: 'epinesEmpoisonnees', name: 'Épines empoisonnées', shortLabel: 'Épines\nempois.', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character) {
+      // Consomme le poison accumulé sur tous les ennemis (voir applyDot/poisonStacks) pour
+      // rendre des PV à l'allié le plus mal en point -- x2 par stack consommée.
+      let stacksConsumed = 0;
+      for (const enemy of enemies) {
+        stacksConsumed += enemy.poisonStacks || 0;
+        enemy.poisonStacks = 0;
+      }
+      if (stacksConsumed > 0) {
+        const heal = stacksConsumed * 2 * Math.round(character.stats.savoir * 0.2);
+        healCharacter(lowestHpAlly() || character, heal, character);
+      }
+    },
+  },
+  carapaceDEcorce: {
+    id: 'carapaceDEcorce', name: "Carapace d'écorce", shortLabel: "Carapace\nd'écorce", targeting: 'ally', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character) {
+      const target = lowestHpAlly() || character;
+      const shield = 10 + Math.round(character.stats.intelligence * 0.8);
+      target.shieldHp = shield;
+      target.shieldMax = shield;
+      target.shieldExpiresAt = performance.now() + 6000;
+      healCharacter(target, Math.round(character.stats.savoir * 0.3), character);
+    },
+  },
+  chantDeLaForet: {
+    id: 'chantDeLaForet', name: 'Chant de la forêt', shortLabel: 'Chant de\nla forêt', targeting: 'ally', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character) {
+      const heal = Math.round(character.stats.savoir * 0.4);
+      for (const c of characters) {
+        if (c.playerControlled && c.hp > 0) healCharacter(c, heal, character);
+      }
+    },
+  },
+
+  // ============================== PRÊTRE (Intelligence/Savoir, distance) ==============================
+  motDeDouleur: {
+    id: 'motDeDouleur', name: 'Mot de douleur', shortLabel: 'Mot de\ndouleur', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character, target) {
+      const { amount, crit } = computeStatDamage(character, 'intelligence', 0.5);
+      if (dealDamage(target, amount, '245, 245, 245', character, crit, 'Mot de douleur')) {
+        const heal = Math.round(amount * 0.25);
+        for (const c of characters) {
+          if (c.playerControlled && c.hp > 0) healCharacter(c, heal, character);
+        }
+      }
+    },
+  },
+  cercleSacre: {
+    id: 'cercleSacre', name: 'Cercle sacré', shortLabel: 'Cercle\nsacré', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character) {
+      const now = performance.now();
+      for (const ally of characters) {
+        if (!ally.playerControlled || ally.hp <= 0) continue;
+        if (Math.hypot(ally.x - character.x, ally.y - character.y) > ZONE_RADIUS) continue;
+        ally.damageReductionFactor = 0.25;
+        ally.damageReductionUntil = now + 4000;
+      }
+      for (const enemy of enemies) {
+        if (enemy.hp <= 0) continue;
+        if (Math.hypot(enemy.x - character.x, enemy.y - character.y) > ZONE_RADIUS) continue;
+        applyDot(enemy, {
+          kind: 'burn', ticksLeft: 3, tickIntervalMs: 1000, rgb: '245, 245, 245', source: character,
+          skillName: 'Cercle sacré', damagePerTick: Math.round(character.stats.intelligence * 0.1),
+        });
+        enemy.slowMultiplier = 0.6;
+        enemy.slowUntil = now + 3000;
+      }
+    },
+  },
+  voileProtecteur: {
+    id: 'voileProtecteur', name: 'Voile protecteur', shortLabel: 'Voile\nprotecteur', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character) {
+      const shield = 15 + Math.round(character.stats.savoir * 1.0);
+      character.shieldHp = shield;
+      character.shieldMax = shield;
+      character.shieldExpiresAt = performance.now() + 6000;
+    },
+  },
+  soinMajeur: {
+    id: 'soinMajeur', name: 'Soin majeur', shortLabel: 'Soin\nmajeur', targeting: 'ally', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character) {
+      const target = lowestHpAlly() || character;
+      const recentlyHit = performance.now() - (target.lastDamageTakenAt || 0) <= 3000;
+      const heal = Math.round(character.stats.savoir * (recentlyHit ? 1.1 : 0.9));
+      healCharacter(target, heal, character);
+    },
+  },
+
+  // ============================== SORCIER (Intelligence, distance) ==============================
+  drainDeVie: {
+    id: 'drainDeVie', name: 'Drain de vie', shortLabel: 'Drain de\nvie', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character, target) {
+      const { amount, crit } = computeStatDamage(character, 'intelligence', 0.7);
+      if (dealDamage(target, amount, '81, 45, 168', character, crit, 'Drain de vie')) {
+        healCharacter(character, Math.round(amount * 0.5), character);
+      }
+    },
+  },
+  epidemie: {
+    id: 'epidemie', name: 'Épidémie', shortLabel: 'Épidémie', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character) {
+      for (const enemy of enemies) {
+        if (enemy.hp <= 0) continue;
+        applyDot(enemy, {
+          kind: 'poison', ticksLeft: 4, tickIntervalMs: 1000, rgb: '81, 45, 168', source: character,
+          skillName: 'Épidémie', damagePerTick: Math.round(character.stats.intelligence * 0.1),
+        });
+      }
+      // Si le total infligé par le Sorcier ce combat dépasse le seuil, explosion de zone --
+      // le seuil augmente ensuite pour la prochaine fois (voir combatStats, déjà suivi ailleurs).
+      const dealtTotal = (combatStats[character.index] && combatStats[character.index].dealt.total) || 0;
+      const threshold = character.epidemieNextThreshold || 200;
+      if (dealtTotal >= threshold) {
+        character.epidemieNextThreshold = threshold + 200;
+        for (const enemy of enemies) {
+          if (enemy.hp <= 0) continue;
+          const { amount, crit } = computeStatDamage(character, 'intelligence', 1.0);
+          dealDamage(enemy, amount, '81, 45, 168', character, crit, 'Épidémie (explosion)');
+        }
+      }
+    },
+  },
+  pacteDeProtection: {
+    id: 'pacteDeProtection', name: 'Pacte de protection', shortLabel: 'Pacte de\nprotection', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character) {
+      const shield = 15 + Math.round(character.stats.intelligence * 1.0);
+      character.shieldHp = shield;
+      character.shieldMax = shield;
+      character.shieldExpiresAt = performance.now() + 6000;
+      character.shieldVengeful = true;
+      character.shieldAbsorbedTotal = 0;
+      character.lastShieldAttacker = null;
+    },
+  },
+  malediction: {
+    id: 'malediction', name: 'Malédiction', shortLabel: 'Malédic-\ntion', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character, target) {
+      const now = performance.now();
+      target.damageOutputMultiplier = 0.8; // -20% dégâts infligés par la cible
+      target.damageOutputUntil = now + 5000;
+      target.cursedBy = character; // si la cible meurt maudite, explosion de zone (voir dealDamage)
+    },
+  },
+
+  // ============================== CHAMAN (Intelligence, mêlée) ==============================
+  frappeDesEsprits: {
+    id: 'frappeDesEsprits', name: 'Frappe des esprits', shortLabel: 'Frappe\nesprits', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character, target) {
+      const { amount, crit } = computeStatDamage(character, 'intelligence', 0.9);
+      if (dealDamage(target, amount, '236, 64, 122', character, crit, 'Frappe des esprits')) {
+        target.damageTakenBonusFactor = 0.15;
+        target.damageTakenBonusUntil = performance.now() + 5000;
+      }
+    },
+  },
+  chaineDEclairs: {
+    id: 'chaineDEclairs', name: "Chaîne d'éclairs", shortLabel: "Chaîne\nd'éclairs", targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character, target) {
+      const { amount, crit } = computeStatDamage(character, 'intelligence', 0.5);
+      dealDamage(target, amount, '255, 213, 79', character, crit, "Chaîne d'éclairs");
+      // Un seul autre ennemi disponible pour l'instant : le "rebond" retombe sur la même cible.
+      if (Math.random() < 2 / 3 && target.hp > 0) {
+        const { amount: amount2, crit: crit2 } = computeStatDamage(character, 'intelligence', 0.3);
+        dealDamage(target, amount2, '255, 213, 79', character, crit2, "Chaîne d'éclairs (rebond)");
+      }
+    },
+  },
+  boucliersDesAncetres: {
+    id: 'boucliersDesAncetres', name: 'Bouclier des ancêtres', shortLabel: 'Bouclier\nancêtres', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character) {
+      const shield = 15 + Math.round(character.stats.intelligence * 1.0);
+      character.shieldHp = shield;
+      character.shieldMax = shield;
+      character.shieldExpiresAt = performance.now() + 6000;
+      healCharacter(character, Math.round(character.stats.savoir * 0.2), character);
+    },
+  },
+  totem: {
+    id: 'totem', name: 'Totem', shortLabel: 'Totem', targeting: 'ally', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character) {
+      const heal = Math.round(character.stats.savoir * 0.15);
+      for (const c of characters) {
+        if (!c.playerControlled || c.hp <= 0) continue;
+        healCharacter(c, heal, character);
+        c.damageOutputMultiplier = 1.15;
+        c.damageOutputUntil = performance.now() + 6000;
+      }
     },
   },
 };
 
 const CLASS_SKILLS = {
-  Mage: ['bouleDeFeu', 'traitDeGivre', 'dephasage'],
-  Paladin: ['lumiereDivine', 'murSacre', 'fierteDuJuste'],
-  Voleur: ['coupSournois', 'surinage', 'formeDOmbre'],
+  Guerrier: ['frappeRageuse', 'tourbillon', 'postureDefensive', 'criDeRage'],
+  Barbare: ['eventration', 'cercleDeSang', 'peauDePierre', 'frenesie'],
+  Paladin: ['chatiment', 'vagueSacree', 'murSacre', 'lumiereDivine'],
+  Voleur: ['coupSournois', 'fauchage', 'formeDOmbre', 'surinage'],
+  Mage: ['eclatDeGlace', 'novaDeGivre', 'voileDeGivre', 'gel'],
+  Pyromane: ['bouleDeFeu', 'pluieDeFeu', 'bouclierDeFlammes', 'explosion'],
+  Chasseur: ['tirPercant', 'tirEnRafale', 'repliTactique', 'piegeAOurs'],
+  Druide: ['morsureVenimeuse', 'epinesEmpoisonnees', 'carapaceDEcorce', 'chantDeLaForet'],
+  'Prêtre': ['motDeDouleur', 'cercleSacre', 'voileProtecteur', 'soinMajeur'],
+  Sorcier: ['drainDeVie', 'epidemie', 'pacteDeProtection', 'malediction'],
+  Chaman: ['frappeDesEsprits', 'chaineDEclairs', 'boucliersDesAncetres', 'totem'],
 };
 
 // Même critère de "à portée" que l'attaque de base (voir updateCombat) : corps à corps = juste à
@@ -793,7 +1337,13 @@ function updateMove(character, dt) {
     return;
   }
   if (!character.isMoving) return;
-  let remaining = PIXELS_PER_MS * dt;
+
+  const now = performance.now();
+  // Étourdi (Gel du Mage) : ne bouge plus du tout tant que ça dure.
+  if ((character.stunnedUntil || 0) > now) return;
+  // Ralenti (Trait de givre/Éclat de glace) : vitesse de déplacement réduite.
+  const speedMultiplier = (character.slowUntil || 0) > now ? (character.slowMultiplier || 1) : 1;
+  let remaining = PIXELS_PER_MS * speedMultiplier * dt;
 
   while (remaining > 0 && character.pathPoints.length > 0) {
     const target = character.pathPoints[0];
@@ -1958,6 +2508,43 @@ function worldLevelPositions() {
 // ENCOUNTERS) et remet tout le monde à zéro : PV/mana/bouclier/altérations/cooldowns des
 // personnages et de l'ennemi réinitialisés, tout replacé à sa position de départ -- un "nouveau"
 // combat à chaque clic sur un rond, plutôt que de reprendre les dégâts du combat précédent.
+// Remet à zéro tous les états de combat temporaires d'un personnage (bouclier, statuts, ressource
+// de classe...) qu'un des 44 sorts peut poser -- partagé entre l'ennemi et les personnages du
+// joueur dans resetCombatEncounter ci-dessous, pour ne pas dupliquer une liste aussi longue.
+function resetTransientCombatState(entity) {
+  entity.attackTarget = null;
+  entity.dotEffects = [];
+  entity.isMoving = false;
+  entity.pathPoints = [];
+  entity.shieldHp = 0;
+  entity.shieldMax = 0;
+  entity.shieldExpiresAt = 0;
+  entity.shieldReflectBurn = false;
+  entity.shieldReflectSlow = false;
+  entity.shieldVengeful = false;
+  entity.shieldAbsorbedTotal = 0;
+  entity.lastShieldAttacker = null;
+  entity.tauntedBy = null;
+  entity.tauntUntil = 0;
+  entity.slowMultiplier = 1;
+  entity.slowUntil = 0;
+  entity.atkSlowMultiplier = 1;
+  entity.atkSlowUntil = 0;
+  entity.stunnedUntil = 0;
+  entity.damageReductionFactor = 0;
+  entity.damageReductionUntil = 0;
+  entity.damageOutputMultiplier = 1;
+  entity.damageOutputUntil = 0;
+  entity.damageTakenBonusFactor = 0;
+  entity.damageTakenBonusUntil = 0;
+  entity.poisonStacks = 0;
+  entity.huntersMarkUntil = 0;
+  entity.cursedBy = null;
+  entity.rage = 0;
+  entity.epidemieNextThreshold = 0;
+  entity.guaranteedBackstabUntil = 0;
+}
+
 function resetCombatEncounter(levelIndex) {
   const encounter = ENCOUNTERS[levelIndex];
   const enemy = enemies[0];
@@ -1970,12 +2557,7 @@ function resetCombatEncounter(levelIndex) {
     enemy.hp = encounter.hpMax;
     enemy.combatOverride = encounter.combat;
     enemy.stats = { force: encounter.statValue };
-    enemy.attackTarget = null;
-    enemy.dotEffects = [];
-    enemy.tauntedBy = null;
-    enemy.tauntUntil = 0;
-    enemy.isMoving = false;
-    enemy.pathPoints = [];
+    resetTransientCombatState(enemy);
     const spawn = clampPointToField({ size: encounter.size }, cx, cy - 220);
     enemy.x = spawn.x;
     enemy.y = spawn.y;
@@ -1986,10 +2568,7 @@ function resetCombatEncounter(levelIndex) {
     if (!character.playerControlled) continue;
     character.hp = character.hpMax;
     character.mana = character.manaMax;
-    character.shieldHp = 0;
     character.cooldowns = {};
-    character.dotEffects = [];
-    character.attackTarget = null;
     character.threat = 0;
     character.lastThreatAt = 0;
     character.dodgeChance = 0;
@@ -1997,9 +2576,8 @@ function resetCombatEncounter(levelIndex) {
     character.phaseUntil = 0;
     character.lastDamageTakenAt = 0;
     character.lastAutoSkillAt = 0;
-    character.isMoving = false;
-    character.pathPoints = [];
     character.selected = false;
+    resetTransientCombatState(character);
     character.x = squareXs[i];
     character.y = cy;
     i += 1;
