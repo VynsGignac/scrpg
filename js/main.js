@@ -96,6 +96,25 @@ function randomCharacterStats() {
   };
 }
 
+// Emplacements d'équipement d'un personnage -- vides pour l'instant, aucun objet n'existe encore
+// dans le jeu (voir drawCharacterScene pour leur affichage).
+const EQUIPMENT_SLOTS = [
+  { key: 'tete', label: 'Tête' },
+  { key: 'torse', label: 'Torse' },
+  { key: 'jambe', label: 'Jambe' },
+  { key: 'main', label: 'Main' },
+  { key: 'pied', label: 'Pied' },
+  { key: 'mainPrincipale', label: 'Main princ.' },
+  { key: 'mainSecondaire', label: 'Main sec.' },
+  { key: 'collier', label: 'Collier' },
+];
+
+function createEmptyEquipment() {
+  const equipment = {};
+  for (const slot of EQUIPMENT_SLOTS) equipment[slot.key] = null;
+  return equipment;
+}
+
 const squareColors = ['#4fc3f7', '#ff8a65', '#aed581'];
 const squareXs = [cx - SPACING, cx, cx + SPACING];
 const chosenClasses = shuffle(CHARACTER_CLASSES).slice(0, 3);
@@ -113,15 +132,16 @@ for (let i = 0; i < 3; i++) {
 
   characters.push({
     x: squareXs[i], y: cy, size: CHARACTER_SIZE, color: squareColors[i], selected: false, isMoving: false,
-    playerControlled: true, index: i + 1, className: chosenClasses[i], level: randomInt(1, 100),
+    playerControlled: true, index: i + 1, className: chosenClasses[i], level: 1, xp: 0,
     label: chosenClasses[i].charAt(0), // ex. "M" pour Mage -- affiché sur le carré (voir drawCharacter)
     stats, hp: hpMax, hpMax, mana: manaMax, manaMax, threat: 0, lastThreatAt: 0,
+    equipment: createEmptyEquipment(),
   });
 
   players.push({
     index: i + 1,
     name: chosenNames[i],
-    level: randomInt(1, 100),
+    level: 1, xp: 0,
     skills: { apm: randomInt(0, 5), connaissanceJeu: randomInt(0, 5) },
   });
 }
@@ -1523,7 +1543,7 @@ function drawSkillRow(player, key, label, x, y, width) {
 function drawPlayerScene() {
   const cardX = LIST_PADDING_X;
   const cardWidth = canvas.width - LIST_PADDING_X * 2;
-  const cardHeight = 140;
+  const cardHeight = 158;
   let y = TOP_BANNER_HEIGHT + 16;
 
   for (const player of players) {
@@ -1552,7 +1572,19 @@ function drawPlayerScene() {
       ctx.textAlign = 'left';
     }
 
-    let rowY = y + CARD_PADDING + 28;
+    // Barre d'XP -- valeurs provisoires (voir VICTORY_XP/xpToNextLevel), juste le mécanisme.
+    let rowY = y + CARD_PADDING + 26;
+    const xpNeeded = xpToNextLevel(player.level);
+    const fullWidth = cardWidth - CARD_PADDING * 2;
+    ctx.font = '11px sans-serif';
+    ctx.fillStyle = '#ffffff99';
+    ctx.fillText(`XP ${player.xp}/${xpNeeded}`, cardX + CARD_PADDING, rowY);
+    ctx.fillStyle = '#ffffff14';
+    ctx.fillRect(cardX + CARD_PADDING, rowY + 4, fullWidth, 5);
+    ctx.fillStyle = '#ffd54f';
+    ctx.fillRect(cardX + CARD_PADDING, rowY + 4, fullWidth * Math.min(player.xp / xpNeeded, 1), 5);
+    rowY += 22;
+
     rowY = drawSkillRow(player, 'apm', 'APM', cardX + CARD_PADDING, rowY, cardWidth - CARD_PADDING * 2);
     drawSkillRow(player, 'connaissanceJeu', 'Connaissance du jeu', cardX + CARD_PADDING, rowY, cardWidth - CARD_PADDING * 2);
 
@@ -1566,7 +1598,7 @@ function drawPlayerScene() {
 function drawCharacterScene() {
   const cardX = LIST_PADDING_X;
   const cardWidth = canvas.width - LIST_PADDING_X * 2;
-  const cardHeight = 150;
+  const cardHeight = 232;
   let y = TOP_BANNER_HEIGHT + 16;
 
   const STAT_MAX = 20;
@@ -1604,12 +1636,24 @@ function drawCharacterScene() {
       ctx.textAlign = 'left';
     }
 
+    // Barre d'XP -- valeurs provisoires (voir VICTORY_XP/xpToNextLevel), juste le mécanisme.
+    let rowY = y + CARD_PADDING + 26;
+    const xpNeeded = xpToNextLevel(character.level);
+    const fullWidth = cardWidth - CARD_PADDING * 2;
+    ctx.font = '11px sans-serif';
+    ctx.fillStyle = '#ffffff99';
+    ctx.fillText(`XP ${character.xp}/${xpNeeded}`, cardX + CARD_PADDING, rowY);
+    ctx.fillStyle = '#ffffff14';
+    ctx.fillRect(cardX + CARD_PADDING, rowY + 4, fullWidth, 5);
+    ctx.fillStyle = '#ffd54f';
+    ctx.fillRect(cardX + CARD_PADDING, rowY + 4, fullWidth * Math.min(character.xp / xpNeeded, 1), 5);
+    rowY += 22;
+
     const labelWidth = 90;
     const valueColWidth = 28;
     const barX = cardX + CARD_PADDING + labelWidth;
     const barWidth = cardWidth - CARD_PADDING * 2 - labelWidth - valueColWidth;
 
-    let rowY = y + CARD_PADDING + 28;
     for (const [label, key] of statRows) {
       const value = character.stats[key];
       ctx.font = '12px sans-serif';
@@ -1626,6 +1670,35 @@ function drawCharacterScene() {
       ctx.textAlign = 'left';
 
       rowY += 20;
+    }
+
+    // Équipement -- emplacements vides pour l'instant, aucun objet n'existe encore dans le jeu.
+    rowY += 6;
+    ctx.font = '11px sans-serif';
+    ctx.fillStyle = '#ffffff99';
+    ctx.fillText('Équipement', cardX + CARD_PADDING, rowY + 8);
+    rowY += 14;
+
+    const slotGap = 4;
+    const slotSize = Math.min(30, (fullWidth - (EQUIPMENT_SLOTS.length - 1) * slotGap) / EQUIPMENT_SLOTS.length);
+    let slotX = cardX + CARD_PADDING;
+    for (const slot of EQUIPMENT_SLOTS) {
+      const item = character.equipment[slot.key];
+      ctx.fillStyle = '#ffffff10';
+      ctx.fillRect(slotX, rowY, slotSize, slotSize);
+      ctx.strokeStyle = '#ffffff33';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(slotX + 0.5, rowY + 0.5, slotSize - 1, slotSize - 1);
+
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = `${Math.max(7, Math.round(slotSize * 0.32))}px sans-serif`;
+      ctx.fillStyle = '#ffffff55';
+      ctx.fillText(item ? item.label : slot.label.slice(0, 2), slotX + slotSize / 2, rowY + slotSize / 2 + 1);
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+
+      slotX += slotSize + slotGap;
     }
 
     y += cardHeight + CARD_GAP;
@@ -1721,9 +1794,28 @@ function enterCombatLevel(index) {
   currentScene = 'combat';
 }
 
-// Débloque le rond suivant dès que le boss du combat affiché tombe à 0 PV -- appelé à chaque
-// image (voir loop()), mais combatOutcomeHandled évite de ré-incrémenter worldProgress en boucle
-// tant qu'on n'a pas relancé un nouveau combat (voir enterCombatLevel).
+// Expérience/niveau : valeurs provisoires (montant par victoire, seuil par niveau), à ajuster
+// plus tard (demande utilisateur explicite) -- juste le mécanisme mis en place pour l'instant.
+// Générique : marche aussi bien pour un personnage que pour un joueur, les deux n'ayant besoin
+// que d'un .xp et d'un .level.
+const VICTORY_XP = 20;
+
+function xpToNextLevel(level) {
+  return level * 100;
+}
+
+function grantXp(entity, amount) {
+  entity.xp = (entity.xp || 0) + amount;
+  while (entity.xp >= xpToNextLevel(entity.level)) {
+    entity.xp -= xpToNextLevel(entity.level);
+    entity.level += 1;
+  }
+}
+
+// Débloque le rond suivant et distribue l'XP de victoire (personnages ET joueurs, demande
+// utilisateur explicite) dès que le boss du combat affiché tombe à 0 PV -- appelé à chaque image
+// (voir loop()), mais combatOutcomeHandled évite de redéclencher tout ça en boucle tant qu'on n'a
+// pas relancé un nouveau combat (voir enterCombatLevel).
 function checkCombatOutcome() {
   if (currentScene !== 'combat' || combatOutcomeHandled) return;
   const boss = enemies[0];
@@ -1733,6 +1825,11 @@ function checkCombatOutcome() {
   if (currentWorldLevel === worldProgress) {
     worldProgress = Math.min(worldProgress + 1, WORLD_LEVELS.length);
   }
+
+  for (const character of characters) {
+    if (character.playerControlled) grantXp(character, VICTORY_XP);
+  }
+  for (const player of players) grantXp(player, VICTORY_XP);
 }
 
 function drawCheckmark(x, y, size) {
