@@ -1287,6 +1287,149 @@ function drawCharacterScene() {
   }
 }
 
+// ------------------------------------------------------------
+// Scène "Monde" : une carte de progression -- un chemin reliant des ronds, chacun un combat, le
+// dernier étant le boss final. Un seul combat existe pour l'instant (le boss actuel), donc tous
+// les ronds mènent à la même rencontre ; le prochain pas naturel sera de leur donner un contenu
+// différent. Cliquer un rond débloqué (déjà atteint ou le prochain) relance ce combat à zéro
+// (voir resetCombatEncounter) et bascule sur la scène Combat ; le round suivant se débloque
+// quand le boss actuel tombe à 0 PV (déjà visible via sa croix de mort, voir drawCharacter).
+// ------------------------------------------------------------
+const WORLD_LEVELS = [
+  { label: '1' },
+  { label: '2' },
+  { label: '3' },
+  { label: '4' },
+  { label: 'B', isBoss: true },
+];
+let worldProgress = 0; // index du prochain rond à vaincre ; les index < ça sont déjà complétés
+let currentWorldLevel = 0; // rond correspondant au combat affiché dans la scène Combat
+let combatOutcomeHandled = false; // évite de débloquer le rond suivant en boucle une fois le boss tombé
+
+function worldLevelPositions() {
+  const top = TOP_BANNER_HEIGHT + 50;
+  const bottom = canvas.height - 40;
+  const count = WORLD_LEVELS.length;
+  const usableHeight = Math.max(bottom - top, 1);
+  return WORLD_LEVELS.map((level, index) => {
+    const t = count === 1 ? 0 : index / (count - 1);
+    return {
+      x: canvas.width * (index % 2 === 0 ? 0.32 : 0.68),
+      y: bottom - t * usableHeight, // le niveau 0 en bas, le boss final tout en haut
+      level,
+      index,
+    };
+  });
+}
+
+// Remet l'unique combat actuel à zéro : PV/mana/bouclier/altérations/cooldowns des personnages
+// et du boss réinitialisés, tout le monde replacé à sa position de départ -- une "nouvelle"
+// rencontre à chaque clic sur un rond, plutôt que de reprendre les dégâts du combat précédent.
+function resetCombatEncounter() {
+  const boss = enemies[0];
+  if (boss) {
+    boss.hp = boss.hpMax;
+    boss.attackTarget = null;
+    boss.dotEffects = [];
+    boss.isMoving = false;
+    boss.pathPoints = [];
+    boss.x = bossSpawn.x;
+    boss.y = bossSpawn.y;
+  }
+
+  let i = 0;
+  for (const character of characters) {
+    if (!character.playerControlled) continue;
+    character.hp = character.hpMax;
+    character.mana = character.manaMax;
+    character.shieldHp = 0;
+    character.cooldowns = {};
+    character.dotEffects = [];
+    character.attackTarget = null;
+    character.isMoving = false;
+    character.pathPoints = [];
+    character.selected = false;
+    character.x = squareXs[i];
+    character.y = cy;
+    i += 1;
+  }
+}
+
+function enterCombatLevel(index) {
+  currentWorldLevel = index;
+  combatOutcomeHandled = false;
+  resetCombatEncounter();
+  currentScene = 'combat';
+}
+
+// Débloque le rond suivant dès que le boss du combat affiché tombe à 0 PV -- appelé à chaque
+// image (voir loop()), mais combatOutcomeHandled évite de ré-incrémenter worldProgress en boucle
+// tant qu'on n'a pas relancé un nouveau combat (voir enterCombatLevel).
+function checkCombatOutcome() {
+  if (currentScene !== 'combat' || combatOutcomeHandled) return;
+  const boss = enemies[0];
+  if (!boss || boss.hp > 0) return;
+
+  combatOutcomeHandled = true;
+  if (currentWorldLevel === worldProgress) {
+    worldProgress = Math.min(worldProgress + 1, WORLD_LEVELS.length);
+  }
+}
+
+function drawCheckmark(x, y, size) {
+  ctx.strokeStyle = '#0b3d0b';
+  ctx.lineWidth = Math.max(2, size * 0.16);
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(x - size * 0.32, y);
+  ctx.lineTo(x - size * 0.06, y + size * 0.28);
+  ctx.lineTo(x + size * 0.36, y - size * 0.3);
+  ctx.stroke();
+  ctx.lineCap = 'butt';
+}
+
+function drawWorldScene() {
+  const positions = worldLevelPositions();
+
+  ctx.strokeStyle = '#ffffff33';
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  positions.forEach((p, i) => {
+    if (i === 0) ctx.moveTo(p.x, p.y);
+    else ctx.lineTo(p.x, p.y);
+  });
+  ctx.stroke();
+
+  for (const p of positions) {
+    const completed = p.index < worldProgress;
+    const current = p.index === worldProgress;
+    const locked = p.index > worldProgress;
+    const radius = p.level.isBoss ? 34 : 26;
+
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+    ctx.fillStyle = completed ? '#66bb6a' : current ? (p.level.isBoss ? '#e53935' : '#ffd54f') : '#3a3f45';
+    ctx.fill();
+    ctx.lineWidth = current ? 4 : 2;
+    ctx.strokeStyle = current ? '#ffffff' : '#00000055';
+    ctx.stroke();
+
+    if (completed) {
+      drawCheckmark(p.x, p.y, radius);
+    } else {
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = `bold ${Math.round(radius * 0.8)}px sans-serif`;
+      ctx.fillStyle = locked ? '#ffffff55' : '#101010';
+      ctx.fillText(p.level.label, p.x, p.y + 1);
+    }
+
+    if (!locked) {
+      registerHitRect(p.x - radius, p.y - radius, radius * 2, radius * 2, () => enterCombatLevel(p.index));
+    }
+  }
+}
+
 // Scènes pas encore implémentées : simple espace réservé (comme le tout premier placeholder
 // "SCRPG"), en attendant leur contenu.
 function drawPlaceholderScene(sceneKey) {
@@ -1361,6 +1504,8 @@ function draw() {
     drawPlayerScene();
   } else if (currentScene === 'personnage') {
     drawCharacterScene();
+  } else if (currentScene === 'monde') {
+    drawWorldScene();
   } else {
     drawPlaceholderScene(currentScene);
   }
@@ -1397,6 +1542,7 @@ function loop(now) {
     updateShield(character, now);
   }
   updateFloatingTexts(now);
+  checkCombatOutcome();
   draw();
   requestAnimationFrame(loop);
 }
