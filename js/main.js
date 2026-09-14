@@ -185,6 +185,33 @@ const DEFAULT_COMBAT = { melee: true, stat: 'force' };
 const RANGED_ATTACK_RANGE = 220;
 const ATTACK_INTERVAL_MS = 2000;
 
+// ------------------------------------------------------------
+// Phase de combat ("pull") : un combat ne démarre pas tout seul.
+// - 'prePull' : le joueur peut repositionner ses personnages, mais seulement dans les 2 tiers
+//   bas de l'écran (pas trop près des ennemis, voir clampPointToField) -- aucune attaque ni
+//   compétence possible, et personne ne joue tout seul (voir updateAutoPlay/updateEnemyAI).
+// - 'countdown' : les 10s suivant l'appui sur "Pull" (voir pullCountdownEndAt). Le joueur peut
+//   librement se déplacer et lancer des attaques/compétences, mais toujours aucun pilote
+//   automatique des deux côtés. Le moindre dégât reçu par un ennemi bascule immédiatement en
+//   'active' (voir dealDamage), quel que soit le temps restant.
+// - 'active' : combat normal, tout le système déjà en place (auto-play, IA ennemie, etc.).
+// ------------------------------------------------------------
+const PULL_COUNTDOWN_MS = 10000;
+let combatPhase = 'prePull';
+let pullCountdownEndAt = 0;
+
+// Pendant 'prePull', un personnage du joueur ne peut pas s'approcher des ennemis (dont la zone
+// occupe le tiers haut de l'écran) : seuls les 2 tiers du bas lui sont accessibles.
+function prePullMinY() {
+  return TOP_BANNER_HEIGHT + (canvas.height - TOP_BANNER_HEIGHT) / 3;
+}
+
+function startPullCountdown() {
+  if (combatPhase !== 'prePull') return;
+  combatPhase = 'countdown';
+  pullCountdownEndAt = performance.now() + PULL_COUNTDOWN_MS;
+}
+
 // Un ennemi (voir ENCOUNTERS) définit son propre profil de combat (combatOverride) puisqu'il n'a
 // pas de classe ; un personnage du joueur, lui, le tient de sa classe (CLASS_COMBAT).
 function combatProfile(character) {
@@ -230,7 +257,7 @@ function orderAttack(character, enemy) {
 // approachForCombat) tant qu'il n'est pas à portée -- comme la cible peut elle-même se déplacer
 // entre-temps, il recalcule sa route à chaque fois qu'il arrive quelque part sans être à portée.
 function updateEnemyAI(enemy, now) {
-  if (enemy.hp <= 0) return;
+  if (enemy.hp <= 0 || combatPhase !== 'active') return;
   if (!enemy.attackTarget) {
     const alivePlayers = characters.filter((c) => c.playerControlled && c.hp > 0);
     if (alivePlayers.length === 0) return;
@@ -262,7 +289,7 @@ function nearestEnemyTo(character) {
 // plus rien pour lui -- il reprend uniquement les ordres du joueur (voir pointerup), plus la
 // riposte passive sans déplacement gérée au début de updateCombat ci-dessous, commune à tous.
 function updateAutoPlay(character) {
-  if (character.selected || character.hp <= 0) return;
+  if (character.selected || character.hp <= 0 || combatPhase !== 'active') return;
 
   const target = nearestEnemyTo(character);
   if (!target) return;
@@ -288,8 +315,10 @@ function updateCombat(character, now) {
   // à portée l'attaque sans qu'un ordre explicite soit nécessaire -- qu'il soit sélectionné ou
   // non (la poursuite ACTIVE, avec déplacement, reste elle réservée aux non-sélectionnés, voir
   // updateAutoPlay). Une cible existante n'est jamais remplacée ici : "tant qu'une autre cible
-  // n'a pas été définie" (ordre explicite du joueur, ou updateAutoPlay).
-  if (character.playerControlled && !character.attackTarget) {
+  // n'a pas été définie" (ordre explicite du joueur, ou updateAutoPlay). Réservé à la phase
+  // 'active' : avant le pull et pendant le compte à rebours, seule une attaque manuelle du
+  // joueur (voir orderAttack/castSkill) peut faire agir un personnage.
+  if (character.playerControlled && !character.attackTarget && combatPhase === 'active') {
     const candidate = nearestEnemyTo(character);
     if (candidate && isInRangeOf(character, candidate)) character.attackTarget = candidate;
   }
@@ -348,8 +377,11 @@ function drawFloatingTexts(now) {
 // ------------------------------------------------------------
 
 // Inflige des dégâts à "target" en consommant d'abord son éventuel bouclier (voir Mur sacré),
-// puis affiche le nombre flottant correspondant.
+// puis affiche le nombre flottant correspondant. Le moindre dégât reçu par un ennemi démarre le
+// combat pour de bon, même pendant le compte à rebours du pull (voir combatPhase en tête de fichier).
 function dealDamage(target, amount, rgb) {
+  if (!target.playerControlled && combatPhase !== 'active') combatPhase = 'active';
+
   let remaining = amount;
   if (target.shieldHp > 0) {
     const absorbed = Math.min(target.shieldHp, remaining);
@@ -489,7 +521,7 @@ function isInRangeOf(character, target) {
 }
 
 function castSkill(character, skillId) {
-  if (character.hp <= 0) return; // mort : ne peut plus lancer de sort
+  if (character.hp <= 0 || combatPhase === 'prePull') return; // mort, ou pull pas encore lancé
   const skill = SKILLS[skillId];
   if (!skill) return;
 
@@ -587,7 +619,11 @@ function resolveOverlaps() {
 // d'écran, marge d'évitement qui pousserait dehors...).
 function clampPointToField(character, x, y) {
   const half = character.size / 2;
-  const minY = TOP_BANNER_HEIGHT + half;
+  let minY = TOP_BANNER_HEIGHT + half;
+  // Avant l'appui sur "Pull" : un personnage du joueur reste cantonné aux 2 tiers du bas.
+  if (character.playerControlled && combatPhase === 'prePull') {
+    minY = Math.max(minY, prePullMinY());
+  }
   const maxX = Math.max(canvas.width - half, half);
   const maxY = Math.max(canvas.height - half, minY);
   return {
@@ -823,8 +859,9 @@ canvas.addEventListener('pointermove', (event) => {
 
   // Survoler un ennemi pendant le drag : indique la cible (voir draw()) au lieu du trajet de
   // déplacement habituel -- sans ça, resolveDestination repousse toujours l'aperçu en dehors de
-  // l'ennemi, donnant l'impression à tort qu'on ne peut pas viser dessus.
-  dragTargetEnemy = hitTestEnemyAt(x, y);
+  // l'ennemi, donnant l'impression à tort qu'on ne peut pas viser dessus. Avant le pull, aucune
+  // attaque n'est possible : jamais de mise en avant de cible, juste l'aperçu de déplacement.
+  dragTargetEnemy = combatPhase === 'prePull' ? null : hitTestEnemyAt(x, y);
   if (dragTargetEnemy) {
     dragPreviewPath = [];
     return;
@@ -851,8 +888,9 @@ canvas.addEventListener('pointerup', (event) => {
       deselectAll();
       activeTarget.selected = true;
 
-      // Terminer le drag SUR un ennemi = ordre d'attaque plutôt qu'un simple déplacement.
-      const targetEnemy = hitTestEnemyAt(x, y);
+      // Terminer le drag SUR un ennemi = ordre d'attaque plutôt qu'un simple déplacement --
+      // sauf avant le pull, où aucune attaque n'est permise (voir combatPhase).
+      const targetEnemy = combatPhase === 'prePull' ? null : hitTestEnemyAt(x, y);
       if (targetEnemy) {
         orderAttack(activeTarget, targetEnemy);
       } else {
@@ -943,6 +981,58 @@ function drawEnemyHealthBar(enemy) {
   ctx.font = '10px sans-serif';
   ctx.fillStyle = '#ffffffcc';
   ctx.fillText(`${Math.max(enemy.hp, 0)}/${enemy.hpMax}`, enemy.x, barY - 3);
+}
+
+// Habillage de la phase de combat (voir combatPhase en tête de fichier) : bouton "Pull" avant le
+// début du combat, compte à rebours pendant les 10s qui suivent. Rien à afficher en 'active'.
+function drawPullOverlay(now) {
+  const areaTop = TOP_BANNER_HEIGHT;
+  const areaCenterX = canvas.width / 2;
+
+  if (combatPhase === 'prePull') {
+    // Limite visuelle des 2 tiers accessibles au joueur (voir clampPointToField/prePullMinY).
+    const boundaryY = prePullMinY();
+    ctx.save();
+    ctx.setLineDash([8, 6]);
+    ctx.strokeStyle = '#ffffff33';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, boundaryY);
+    ctx.lineTo(canvas.width, boundaryY);
+    ctx.stroke();
+    ctx.restore();
+
+    const buttonWidth = 160;
+    const buttonHeight = 56;
+    const buttonX = areaCenterX - buttonWidth / 2;
+    const buttonY = areaTop + 24;
+
+    ctx.fillStyle = '#c62828';
+    ctx.fillRect(buttonX, buttonY, buttonWidth, buttonHeight);
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(buttonX + 1, buttonY + 1, buttonWidth - 2, buttonHeight - 2);
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 20px sans-serif';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('PULL', areaCenterX, buttonY + buttonHeight / 2 + 1);
+
+    registerHitRect(buttonX, buttonY, buttonWidth, buttonHeight, startPullCountdown);
+  } else if (combatPhase === 'countdown') {
+    const remaining = Math.max(0, Math.ceil((pullCountdownEndAt - now) / 1000));
+    const centerY = areaTop + (canvas.height - areaTop) / 2;
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 96px sans-serif';
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = '#00000099';
+    ctx.strokeText(String(remaining), areaCenterX, centerY);
+    ctx.fillStyle = '#ffd54f';
+    ctx.fillText(String(remaining), areaCenterX, centerY);
+  }
 }
 
 const BANNER_HEIGHT = 176;
@@ -1045,9 +1135,10 @@ function drawSelectionBanner(character) {
 // Un clic dessus lance le sort (voir castSkill) -- enregistré comme n'importe quelle autre zone
 // interactive hors combat (interactiveRects), sauf qu'ici on est dans la scène combat elle-même.
 function drawSkillSlot(character, skill, slotX, slotY, slotSize, now) {
+  const locked = combatPhase === 'prePull'; // pull pas encore lancé : aucune compétence utilisable
   const readyAt = (character.cooldowns && character.cooldowns[skill.id]) || 0;
-  const remaining = Math.max(0, readyAt - now);
-  const onCooldown = remaining > 0;
+  const remaining = locked ? skill.cooldownMs : Math.max(0, readyAt - now);
+  const onCooldown = locked || remaining > 0;
 
   ctx.fillStyle = '#ffffff20';
   ctx.fillRect(slotX, slotY, slotSize, slotSize);
@@ -1067,12 +1158,13 @@ function drawSkillSlot(character, skill, slotX, slotY, slotSize, now) {
   lines.forEach((line, i) => ctx.fillText(line, slotX + slotSize / 2, startY + i * lineHeight));
 
   if (onCooldown) {
-    const frac = remaining / skill.cooldownMs;
     ctx.fillStyle = '#00000099';
-    ctx.fillRect(slotX, slotY, slotSize, slotSize * frac);
-    ctx.font = `bold ${Math.max(10, Math.round(slotSize * 0.28))}px sans-serif`;
-    ctx.fillStyle = '#ffffff';
-    ctx.fillText(String(Math.ceil(remaining / 1000)), slotX + slotSize / 2, slotY + slotSize / 2);
+    ctx.fillRect(slotX, slotY, slotSize, locked ? slotSize : slotSize * (remaining / skill.cooldownMs));
+    if (!locked) {
+      ctx.font = `bold ${Math.max(10, Math.round(slotSize * 0.28))}px sans-serif`;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(String(Math.ceil(remaining / 1000)), slotX + slotSize / 2, slotY + slotSize / 2);
+    }
   }
   ctx.restore();
 
@@ -1080,7 +1172,7 @@ function drawSkillSlot(character, skill, slotX, slotY, slotSize, now) {
   ctx.lineWidth = 1;
   ctx.strokeRect(slotX + 0.5, slotY + 0.5, slotSize - 1, slotSize - 1);
 
-  registerHitRect(slotX, slotY, slotSize, slotSize, () => castSkill(character, skill.id));
+  if (!locked) registerHitRect(slotX, slotY, slotSize, slotSize, () => castSkill(character, skill.id));
 }
 
 // Calcule une taille de police qui fait tenir tous les libellés dans la largeur d'un bouton --
@@ -1383,6 +1475,7 @@ function resetCombatEncounter(levelIndex) {
 function enterCombatLevel(index) {
   currentWorldLevel = index;
   combatOutcomeHandled = false;
+  combatPhase = 'prePull';
   resetCombatEncounter(index);
   currentScene = 'combat';
 }
@@ -1522,6 +1615,7 @@ function draw() {
     }
 
     drawFloatingTexts(performance.now());
+    drawPullOverlay(performance.now());
 
     const selected = characters.find((c) => c.selected);
     if (selected) drawSelectionBanner(selected);
@@ -1554,6 +1648,8 @@ function loop(now) {
   // franchir tout le chemin (et donc plusieurs personnages) d'un coup au prochain calcul.
   const dt = Math.min(now - lastFrameTime, 100);
   lastFrameTime = now;
+
+  if (combatPhase === 'countdown' && now >= pullCountdownEndAt) combatPhase = 'active';
 
   for (const enemy of enemies) updateEnemyAI(enemy, now);
   for (const character of characters) {
