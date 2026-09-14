@@ -284,15 +284,26 @@ const CLASS_COMBAT = {
   Voleur: { melee: true, stat: 'force' },
   Mage: { melee: false, stat: 'intelligence' },
   Pyromane: { melee: false, stat: 'intelligence' },
-  Chasseur: { melee: false, stat: 'force' },
+  // Portée la plus longue du jeu (demande utilisateur explicite : le Chasseur est "le choix
+  // safe", il compense des dégâts plus bas par un style conservateur -- reste hors de portée de
+  // tout le monde plus longtemps que n'importe quelle autre classe à distance, voir rangeFor).
+  Chasseur: { melee: false, stat: 'force', range: 280 },
   Druide: { melee: false, stat: 'intelligence' },
   'Prêtre': { melee: false, stat: 'intelligence' },
   Sorcier: { melee: false, stat: 'intelligence' },
   Chaman: { melee: true, stat: 'intelligence' }, // magie au corps à corps
 };
 const DEFAULT_COMBAT = { melee: true, stat: 'force' };
+// Portée par défaut des classes à distance -- certaines classes ont leur propre valeur (voir
+// CLASS_COMBAT.range, ex. Chasseur) via rangeFor() ci-dessous plutôt que cette constante brute.
 const RANGED_ATTACK_RANGE = 220;
 const ATTACK_INTERVAL_MS = 2000;
+
+// Portée effective d'un personnage à distance : celle de sa classe si elle en définit une
+// (CLASS_COMBAT.range), sinon la portée par défaut commune à toutes les autres.
+function rangeFor(character) {
+  return combatProfile(character).range || RANGED_ATTACK_RANGE;
+}
 
 // ------------------------------------------------------------
 // Phase de combat ("pull") : un combat ne démarre pas tout seul.
@@ -359,8 +370,9 @@ function approachForCombat(attacker, target) {
     // retombait donc toujours sur "à gauche de la cible" quelle que soit la position de départ.
     const nudge = Math.min(target.size / 2 - 1, 20);
     startMove(attacker, target.x + dirX * nudge, target.y + dirY * nudge);
-  } else if (dist > RANGED_ATTACK_RANGE) {
-    startMove(attacker, target.x + dirX * RANGED_ATTACK_RANGE, target.y + dirY * RANGED_ATTACK_RANGE);
+  } else {
+    const range = rangeFor(attacker);
+    if (dist > range) startMove(attacker, target.x + dirX * range, target.y + dirY * range);
   }
 }
 
@@ -677,7 +689,7 @@ function dealDamage(target, amount, rgb, source, isCrit, skillLabel) {
   if (target.playerControlled) target.lastDamageTakenAt = now;
   // Posture défensive (Guerrier) : encaisser un coup pendant qu'elle est active génère de la Rage.
   if (target.playerControlled && (target.gainsRageOnHitUntil || 0) > now) {
-    target.rage = Math.min(5, (target.rage || 0) + 1);
+    target.rage = Math.min(RAGE_MAX, (target.rage || 0) + 1);
   }
 
   if (!target.playerControlled && source && source.playerControlled) {
@@ -797,16 +809,23 @@ function lowestHpAlly() {
 const SKILL_COOLDOWN_MS = 20000; // même recharge pour tous les sorts, demande utilisateur explicite
 const ZONE_RADIUS = 220; // rayon des sorts de zone centrés sur le lanceur (ex. Cercle sacré)
 
+// Plafond de la Rage du Guerrier (character.rage), relevé de 5 à 10 (demande utilisateur
+// explicite : le Guerrier doit être le meilleur DPS sur la durée en mono-cible, avec un gain de
+// Cri de rage qui dépasse +100% une fois les paliers hauts atteints -- accumuler un stack complet
+// prend du temps, donc seul un combat long en tire pleinement parti, voir criDeRage plus bas).
+const RAGE_MAX = 10;
+
 const SKILLS = {
   // ============================== GUERRIER (Force, mêlée) ==============================
-  // Ressource Rage (character.rage, 0-5 stacks) : Frappe rageuse/Tourbillon/Posture défensive en
-  // génèrent, Cri de rage la consomme entièrement pour un buff de dégâts proportionnel.
+  // Ressource Rage (character.rage, 0-RAGE_MAX stacks) : Frappe rageuse/Tourbillon/Posture
+  // défensive en génèrent, Cri de rage la consomme entièrement pour un buff de dégâts
+  // proportionnel.
   frappeRageuse: {
     id: 'frappeRageuse', name: 'Frappe rageuse', shortLabel: 'Frappe\nrageuse', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character, target) {
       const { amount, crit } = computeStatDamage(character, 'force', 0.9);
       dealDamage(target, amount, '158, 158, 158', character, crit, 'Frappe rageuse');
-      character.rage = Math.min(5, (character.rage || 0) + 1);
+      character.rage = Math.min(RAGE_MAX, (character.rage || 0) + 1);
     },
   },
   tourbillon: {
@@ -816,7 +835,7 @@ const SKILLS = {
         if (enemy.hp <= 0) continue;
         const { amount, crit } = computeStatDamage(character, 'force', 0.6);
         dealDamage(enemy, amount, '158, 158, 158', character, crit, 'Tourbillon');
-        character.rage = Math.min(5, (character.rage || 0) + 1);
+        character.rage = Math.min(RAGE_MAX, (character.rage || 0) + 1);
       }
     },
   },
@@ -840,10 +859,14 @@ const SKILLS = {
   },
 
   // ============================== BARBARE (Force, mêlée) ==============================
+  // Sacrifice de PV augmenté et auto-soin réduit (demande utilisateur explicite) : le Barbare
+  // reste un glass cannon assumé, mais exploiter son plein potentiel (Éventration/Cercle de sang
+  // à répétition) vide désormais sa barre de vie plus vite qu'il ne peut se rattraper seul --
+  // nécessite l'attention d'un soigneur pour être soutenable, plutôt qu'auto-suffisant.
   eventration: {
     id: 'eventration', name: 'Éventration', shortLabel: 'Éventration', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character, target) {
-      character.hp = Math.max(1, character.hp - Math.round(character.hpMax * 0.08));
+      character.hp = Math.max(1, character.hp - Math.round(character.hpMax * 0.12));
       const { amount, crit } = computeStatDamage(character, 'force', 1.2);
       const finalAmount = target.hp / target.hpMax < 0.5 ? amount * 2 : amount;
       dealDamage(target, finalAmount, '229, 57, 53', character, crit, 'Éventration');
@@ -852,7 +875,7 @@ const SKILLS = {
   cercleDeSang: {
     id: 'cercleDeSang', name: 'Cercle de sang', shortLabel: 'Cercle\nde sang', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character) {
-      character.hp = Math.max(1, character.hp - Math.round(character.hpMax * 0.15));
+      character.hp = Math.max(1, character.hp - Math.round(character.hpMax * 0.2));
       for (const enemy of enemies) {
         if (enemy.hp <= 0) continue;
         const { amount, crit } = computeStatDamage(character, 'force', 0.7);
@@ -865,7 +888,7 @@ const SKILLS = {
     cast(character) {
       character.damageReductionFactor = 0.3;
       character.damageReductionUntil = performance.now() + 5000;
-      healCharacter(character, Math.round(character.hpMax * 0.1), character); // compense les PV sacrifiés
+      healCharacter(character, Math.round(character.hpMax * 0.05), character); // ne compense plus qu'une partie des PV sacrifiés
     },
   },
   frenesie: {
@@ -925,16 +948,20 @@ const SKILLS = {
   },
 
   // ============================== VOLEUR (Force, mêlée) ==============================
+  // Multiplicateur dans le dos relevé de x2 à x2.5 (demande utilisateur explicite) : le Voleur
+  // doit devenir le meilleur DPS mono-cible du jeu quand son positionnement est bon, pour que
+  // jouer activement le placement (ou les alternatives qui l'imitent : Forme d'ombre, cible déjà
+  // en saignement) soit un vrai choix payant plutôt qu'un bonus cosmétique.
   coupSournois: {
     id: 'coupSournois', name: 'Coup sournois', shortLabel: 'Coup\nsournois', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character, target) {
       const now = performance.now();
       const { amount, crit } = computeStatDamage(character, 'force', 1.2);
       // Dans le dos, ou garanti par Forme d'ombre (consommé une seule fois), ou si la cible
-      // saigne déjà (Surinage/Fauchage) : dégâts doublés.
+      // saigne déjà (Surinage/Fauchage) : dégâts x2.5.
       const guaranteed = (character.guaranteedBackstabUntil || 0) > now;
       const bleeding = (target.dotEffects || []).some((d) => d.kind === 'bleed');
-      const damage = isBehind(character, target) || guaranteed || bleeding ? amount * 2 : amount;
+      const damage = isBehind(character, target) || guaranteed || bleeding ? amount * 2.5 : amount;
       if (guaranteed) character.guaranteedBackstabUntil = 0;
       dealDamage(target, damage, '186, 104, 200', character, crit, 'Coup sournois');
     },
@@ -1034,14 +1061,18 @@ const SKILLS = {
   },
 
   // ============================== PYROMANE (Intelligence, distance) -- feu uniquement ==============================
+  // Profil revu (demande utilisateur explicite) : moins de dégâts directs, brûlures plus fortes et
+  // plus longues -- le Pyromane doit devenir le meilleur DPS sur la durée plutôt qu'à l'instant T,
+  // les brûlures ayant le temps de monter en puissance sur un combat long (voir aussi Explosion,
+  // qui consomme ces brûlures pour un burst d'autant plus gros qu'elles ont eu le temps de s'accumuler).
   bouleDeFeu: {
     id: 'bouleDeFeu', name: 'Boule de feu', shortLabel: 'Boule\nde feu', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character, target) {
-      const { amount, crit } = computeStatDamage(character, 'intelligence', 0.7);
+      const { amount, crit } = computeStatDamage(character, 'intelligence', 0.45);
       if (dealDamage(target, amount, '255, 112, 67', character, crit, 'Boule de feu')) {
         applyDot(target, {
-          kind: 'burn', ticksLeft: 3, tickIntervalMs: 1000, rgb: '255, 87, 34', source: character,
-          skillName: 'Boule de feu (brûlure)', damagePerTick: Math.round(character.stats.intelligence * 0.15),
+          kind: 'burn', ticksLeft: 6, tickIntervalMs: 1000, rgb: '255, 87, 34', source: character,
+          skillName: 'Boule de feu (brûlure)', damagePerTick: Math.round(character.stats.intelligence * 0.22),
         });
       }
     },
@@ -1051,11 +1082,11 @@ const SKILLS = {
     cast(character) {
       for (const enemy of enemies) {
         if (enemy.hp <= 0) continue;
-        const { amount, crit } = computeStatDamage(character, 'intelligence', 0.4);
+        const { amount, crit } = computeStatDamage(character, 'intelligence', 0.25);
         if (dealDamage(enemy, amount, '255, 112, 67', character, crit, 'Pluie de feu')) {
           applyDot(enemy, {
-            kind: 'burn', ticksLeft: 2, tickIntervalMs: 1000, rgb: '255, 87, 34', source: character,
-            skillName: 'Pluie de feu (brûlure)', damagePerTick: Math.round(character.stats.intelligence * 0.1),
+            kind: 'burn', ticksLeft: 4, tickIntervalMs: 1000, rgb: '255, 87, 34', source: character,
+            skillName: 'Pluie de feu (brûlure)', damagePerTick: Math.round(character.stats.intelligence * 0.15),
           });
         }
       }
@@ -1246,10 +1277,14 @@ const SKILLS = {
   },
 
   // ============================== SORCIER (Intelligence, distance) ==============================
+  // Profil revu (demande utilisateur explicite) : le Sorcier doit être le meilleur DPS de zone du
+  // jeu mais rester en retrait en mono-cible -- Drain de vie (son seul vrai dégât mono) affaibli,
+  // Épidémie (sa zone) renforcée : poison plus fort, explosion plus grosse et se déclenchant plus
+  // souvent (seuil abaissé).
   drainDeVie: {
     id: 'drainDeVie', name: 'Drain de vie', shortLabel: 'Drain de\nvie', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character, target) {
-      const { amount, crit } = computeStatDamage(character, 'intelligence', 0.7);
+      const { amount, crit } = computeStatDamage(character, 'intelligence', 0.5);
       if (dealDamage(target, amount, '81, 45, 168', character, crit, 'Drain de vie')) {
         healCharacter(character, Math.round(amount * 0.5), character);
       }
@@ -1262,18 +1297,18 @@ const SKILLS = {
         if (enemy.hp <= 0) continue;
         applyDot(enemy, {
           kind: 'poison', ticksLeft: 4, tickIntervalMs: 1000, rgb: '81, 45, 168', source: character,
-          skillName: 'Épidémie', damagePerTick: Math.round(character.stats.intelligence * 0.1),
+          skillName: 'Épidémie', damagePerTick: Math.round(character.stats.intelligence * 0.15),
         });
       }
       // Si le total infligé par le Sorcier ce combat dépasse le seuil, explosion de zone --
       // le seuil augmente ensuite pour la prochaine fois (voir combatStats, déjà suivi ailleurs).
       const dealtTotal = (combatStats[character.index] && combatStats[character.index].dealt.total) || 0;
-      const threshold = character.epidemieNextThreshold || 200;
+      const threshold = character.epidemieNextThreshold || 150;
       if (dealtTotal >= threshold) {
-        character.epidemieNextThreshold = threshold + 200;
+        character.epidemieNextThreshold = threshold + 150;
         for (const enemy of enemies) {
           if (enemy.hp <= 0) continue;
-          const { amount, crit } = computeStatDamage(character, 'intelligence', 1.0);
+          const { amount, crit } = computeStatDamage(character, 'intelligence', 1.25);
           dealDamage(enemy, amount, '81, 45, 168', character, crit, 'Épidémie (explosion)');
         }
       }
@@ -1376,7 +1411,7 @@ const CLASS_SKILLS = {
 function isInRangeOf(character, target) {
   const combat = combatProfile(character);
   const dist = Math.hypot(character.x - target.x, character.y - target.y);
-  return combat.melee ? dist <= avoidHalfExtent(character, target) + 20 : dist <= RANGED_ATTACK_RANGE + 20;
+  return combat.melee ? dist <= avoidHalfExtent(character, target) + 20 : dist <= rangeFor(character) + 20;
 }
 
 // Coût en mana : le même pour tous les sorts (demande utilisateur explicite, même principe que
