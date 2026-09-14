@@ -309,6 +309,15 @@ const PULL_COUNTDOWN_MS = 10000;
 let combatPhase = 'prePull';
 let pullCountdownEndAt = 0;
 
+// DPS en temps réel (voir bouton "Entraînement" dans l'onglet Sélection roster / drawDpsHud) :
+// horodatage du passage en 'active' (voir dealDamage et loop plus bas), remis à zéro à chaque
+// nouveau combat -- le DPS affiché se base sur le temps écoulé depuis ce moment-là, pas depuis le
+// pull. isTrainingCombat désactive aussi l'écran de victoire/défaite et la progression du Monde
+// (voir checkCombatOutcome) : le mannequin d'entraînement n'attaque jamais et a énormément de PV,
+// ce combat n'est donc censé jamais se terminer tout seul.
+let combatActiveStartAt = 0;
+let isTrainingCombat = false;
+
 // Pendant 'prePull', un personnage du joueur ne peut pas s'approcher des ennemis (dont la zone
 // occupe le tiers haut de l'écran) : seuls les 2 tiers du bas lui sont accessibles.
 function prePullMinY() {
@@ -409,6 +418,7 @@ function highestThreatPlayer(now) {
 // part sans être à portée.
 function updateEnemyAI(enemy, now) {
   if (enemy.hp <= 0 || combatPhase !== 'active') return;
+  if (enemy.trainingDummy) return; // mannequin d'entraînement : n'attaque ni ne se déplace jamais
 
   const alivePlayers = characters.filter((c) => c.playerControlled && c.hp > 0);
   if (alivePlayers.length === 0) return;
@@ -621,7 +631,10 @@ function dealDamage(target, amount, rgb, source, isCrit, skillLabel) {
     }
   }
 
-  if (!target.playerControlled && combatPhase !== 'active') combatPhase = 'active';
+  if (!target.playerControlled && combatPhase !== 'active') {
+    combatPhase = 'active';
+    combatActiveStartAt = now;
+  }
 
   // Réduction de dégâts subis (Posture défensive du Guerrier, Peau de pierre du Barbare...) et
   // bonus de dégâts subis (Frénésie du Barbare sur soi, Frappe des esprits du Chaman sur la
@@ -1893,6 +1906,30 @@ function drawEnemyHealthBar(enemy) {
   ctx.fillText(`${Math.max(enemy.hp, 0)}/${enemy.hpMax}`, enemy.x, barY - 3);
 }
 
+// DPS du groupe en temps réel (voir enterTrainingCombat) : total des dégâts infligés par tous les
+// personnages (voir combatStats/recordDamageStat) divisé par le temps écoulé depuis le premier
+// coup porté (combatActiveStartAt, voir dealDamage/loop) -- 0 tant que rien n'a encore été frappé.
+function currentGroupDps(now) {
+  if (!combatActiveStartAt) return 0;
+  let total = 0;
+  for (const key in combatStats) total += combatStats[key].dealt.total;
+  const elapsedSec = (now - combatActiveStartAt) / 1000;
+  return elapsedSec > 0 ? total / elapsedSec : 0;
+}
+
+function drawDpsHud(now) {
+  const text = `DPS groupe : ${Math.round(currentGroupDps(now))}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'alphabetic';
+  ctx.font = 'bold 16px sans-serif';
+  const y = TOP_BANNER_HEIGHT + 20;
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = '#00000099';
+  ctx.strokeText(text, canvas.width / 2, y);
+  ctx.fillStyle = '#ffd54f';
+  ctx.fillText(text, canvas.width / 2, y);
+}
+
 // Panneau d'ordre de menace : s'affiche au clic sur un ennemi (voir pointerup), liste les
 // personnages du joueur du plus menaçant au moins menaçant vis-à-vis de LUI. Juste la lettre de
 // classe (voir character.label) plutôt que le prénom complet, demande utilisateur explicite.
@@ -2631,24 +2668,10 @@ function resetTransientCombatState(entity) {
   entity.guaranteedBackstabUntil = 0;
 }
 
-function resetCombatEncounter(levelIndex) {
-  const encounter = ENCOUNTERS[levelIndex];
-  const enemy = enemies[0];
-  if (enemy && encounter) {
-    enemy.name = encounter.name;
-    enemy.label = encounter.label;
-    enemy.color = encounter.color;
-    enemy.size = encounter.size;
-    enemy.hpMax = encounter.hpMax;
-    enemy.hp = encounter.hpMax;
-    enemy.combatOverride = encounter.combat;
-    enemy.stats = { force: encounter.statValue };
-    resetTransientCombatState(enemy);
-    const spawn = clampPointToField({ size: encounter.size }, cx, cy - 220);
-    enemy.x = spawn.x;
-    enemy.y = spawn.y;
-  }
-
+// Remet les 4 personnages en place au début d'un combat (PV/mana pleins, plus d'effets ni de
+// menace résiduels...) -- commun à un donjon normal (resetCombatEncounter) et à l'entraînement
+// (enterTrainingCombat), seule la configuration de l'ennemi diffère entre les deux.
+function resetPlayerCombatState() {
   // Rebranche le groupe actif (voir scène Guilde) sur les 4 emplacements de combat : une
   // composition changée depuis la dernière bataille ne prend effet qu'à partir d'ici.
   applyActivePartyToCombatSlots();
@@ -2674,14 +2697,74 @@ function resetCombatEncounter(levelIndex) {
   }
 }
 
+function resetCombatEncounter(levelIndex) {
+  const encounter = ENCOUNTERS[levelIndex];
+  const enemy = enemies[0];
+  if (enemy && encounter) {
+    enemy.name = encounter.name;
+    enemy.label = encounter.label;
+    enemy.color = encounter.color;
+    enemy.size = encounter.size;
+    enemy.hpMax = encounter.hpMax;
+    enemy.hp = encounter.hpMax;
+    enemy.combatOverride = encounter.combat;
+    enemy.stats = { force: encounter.statValue };
+    enemy.trainingDummy = false;
+    resetTransientCombatState(enemy);
+    const spawn = clampPointToField({ size: encounter.size }, cx, cy - 220);
+    enemy.x = spawn.x;
+    enemy.y = spawn.y;
+  }
+
+  resetPlayerCombatState();
+}
+
 function enterCombatLevel(index) {
   currentWorldLevel = index;
   combatOutcomeHandled = false;
   combatPhase = 'prePull';
+  combatActiveStartAt = 0;
+  isTrainingCombat = false;
   threatPanelEnemy = null;
   expandedStatsCharacter = null;
   resetCombatEncounter(index);
   combatStats = createCombatStats(); // après resetCombatEncounter : a besoin des personnages déjà en place
+  currentScene = 'combat';
+}
+
+// "Entraînement" (voir bouton dans l'onglet Sélection roster) : combat spécial contre un mannequin
+// à PV énormes qui n'attaque jamais (enemy.trainingDummy, voir updateEnemyAI) -- juste histoire de
+// taper dedans pour mesurer son DPS (voir drawDpsHud) sans risque pour le groupe ni impact sur la
+// progression du Monde (voir isTrainingCombat dans checkCombatOutcome).
+const TRAINING_DUMMY_HP = 500000;
+
+function enterTrainingCombat() {
+  combatOutcomeHandled = false;
+  combatPhase = 'prePull';
+  combatActiveStartAt = 0;
+  isTrainingCombat = true;
+  threatPanelEnemy = null;
+  expandedStatsCharacter = null;
+
+  const enemy = enemies[0];
+  if (enemy) {
+    enemy.name = "Mannequin d'entraînement";
+    enemy.label = 'M';
+    enemy.color = '#6d4c41';
+    enemy.size = 56;
+    enemy.hpMax = TRAINING_DUMMY_HP;
+    enemy.hp = TRAINING_DUMMY_HP;
+    enemy.combatOverride = { melee: true, stat: 'force' };
+    enemy.stats = { force: 0 };
+    enemy.trainingDummy = true;
+    resetTransientCombatState(enemy);
+    const spawn = clampPointToField({ size: enemy.size }, cx, cy - 220);
+    enemy.x = spawn.x;
+    enemy.y = spawn.y;
+  }
+
+  resetPlayerCombatState();
+  combatStats = createCombatStats();
   currentScene = 'combat';
 }
 
@@ -2709,7 +2792,7 @@ function grantXp(entity, amount) {
 // utilisateur explicite). Appelé à chaque image (voir loop()), mais combatOutcomeHandled évite de
 // redéclencher tout ça en boucle tant qu'on n'a pas relancé un nouveau combat (voir enterCombatLevel).
 function checkCombatOutcome() {
-  if (currentScene !== 'combat' || combatOutcomeHandled) return;
+  if (currentScene !== 'combat' || combatOutcomeHandled || isTrainingCombat) return;
   const boss = enemies[0];
   if (!boss) return;
 
@@ -2823,6 +2906,23 @@ function drawGuildeRosterTab() {
   ctx.fillStyle = '#ffffff';
   ctx.fillText(`Groupe pour le donjon : ${activePartyIndices.length}/${PARTY_SIZE}`, cardX, y + 14);
   y += 34;
+
+  // Combat spécial contre un mannequin d'entraînement (PV énormes, n'attaque jamais) avec le
+  // groupe actif actuel -- pratique pour tester son DPS sans risquer le groupe ni toucher à la
+  // progression du Monde (voir enterTrainingCombat).
+  const trainingButtonHeight = 40;
+  ctx.fillStyle = '#37474f';
+  ctx.fillRect(cardX, y, cardWidth, trainingButtonHeight);
+  ctx.strokeStyle = '#ffd54f88';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(cardX + 0.5, y + 0.5, cardWidth - 1, trainingButtonHeight - 1);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.fillStyle = '#ffd54f';
+  ctx.fillText('Entraînement (mannequin)', cardX + cardWidth / 2, y + trainingButtonHeight / 2 + 1);
+  registerHitRect(cardX, y, cardWidth, trainingButtonHeight, enterTrainingCombat);
+  y += trainingButtonHeight + 16;
 
   const rowHeight = 50;
   for (const character of roster) {
@@ -2946,6 +3046,7 @@ function draw() {
       if (character.playerControlled) drawCharacterBars(character);
     }
     for (const enemy of enemies) drawEnemyHealthBar(enemy);
+    if (isTrainingCombat) drawDpsHud(performance.now());
 
     // Trait pointillé de l'ennemi vers sa cible (voir updateEnemyAI) -- juste pour que le joueur
     // comprenne qui il poursuit, ne pilote aucune logique.
@@ -3036,7 +3137,10 @@ function loop(now) {
   const dt = Math.min(now - lastFrameTime, 100);
   lastFrameTime = now;
 
-  if (combatPhase === 'countdown' && now >= pullCountdownEndAt) combatPhase = 'active';
+  if (combatPhase === 'countdown' && now >= pullCountdownEndAt) {
+    combatPhase = 'active';
+    combatActiveStartAt = now;
+  }
 
   for (const enemy of enemies) updateEnemyAI(enemy, now);
   for (const character of characters) {
