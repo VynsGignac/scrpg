@@ -1100,13 +1100,19 @@ const SKILLS = {
   },
   tirEnRafale: {
     id: 'tirEnRafale', name: 'Tir en rafale', shortLabel: 'Tir en\nrafale', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
-    cast(character, target) {
-      // Pas d'autre ennemi disponible pour l'instant : simule le rebond par des tirs successifs
-      // dégressifs sur la même cible, prêt à viser d'autres ennemis quand il y en aura plusieurs.
+    cast(character) {
+      // Vise jusqu'à 3 ennemis DIFFÉRENTS (dégressif à chaque tir) -- un seul ennemi n'existant
+      // jamais à la fois dans le jeu pour l'instant (voir ENCOUNTERS), les 3 tirs retombent
+      // aujourd'hui sur cet unique ennemi, mais la logique est prête pour de futurs combats à
+      // plusieurs adversaires.
+      const alive = enemies.filter((e) => e.hp > 0);
+      if (alive.length === 0) return;
       let mult = 0.8;
-      for (let i = 0; i < 3 && target.hp > 0; i++) {
+      for (let i = 0; i < 3; i++) {
+        const shotTarget = alive[i % alive.length];
+        if (shotTarget.hp <= 0) continue;
         const { amount, crit } = computeStatDamage(character, 'force', mult);
-        dealDamage(target, amount, '139, 195, 74', character, crit, 'Tir en rafale');
+        dealDamage(shotTarget, amount, '139, 195, 74', character, crit, 'Tir en rafale');
         mult *= 0.6;
       }
     },
@@ -1312,10 +1318,15 @@ const SKILLS = {
     cast(character, target) {
       const { amount, crit } = computeStatDamage(character, 'intelligence', 0.5);
       dealDamage(target, amount, '255, 213, 79', character, crit, "Chaîne d'éclairs");
-      // Un seul autre ennemi disponible pour l'instant : le "rebond" retombe sur la même cible.
-      if (Math.random() < 2 / 3 && target.hp > 0) {
-        const { amount: amount2, crit: crit2 } = computeStatDamage(character, 'intelligence', 0.3);
-        dealDamage(target, amount2, '255, 213, 79', character, crit2, "Chaîne d'éclairs (rebond)");
+      if (Math.random() < 2 / 3) {
+        // Rebondit sur un AUTRE ennemi vivant s'il y en a un ; sinon retombe sur la même cible
+        // (seul cas possible aujourd'hui, un seul ennemi n'existant jamais à la fois dans le jeu).
+        const others = enemies.filter((e) => e !== target && e.hp > 0);
+        const bounceTarget = others.length > 0 ? others[Math.floor(Math.random() * others.length)] : target;
+        if (bounceTarget.hp > 0) {
+          const { amount: amount2, crit: crit2 } = computeStatDamage(character, 'intelligence', 0.3);
+          dealDamage(bounceTarget, amount2, '255, 213, 79', character, crit2, "Chaîne d'éclairs (rebond)");
+        }
       }
     },
   },
