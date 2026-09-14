@@ -970,24 +970,31 @@ const SKILLS = {
       if (totalDealt > 0) healCharacter(character, Math.round(totalDealt * 0.4), character);
     },
   },
+  // Rôle hybride tank/heal secondaire (demande utilisateur explicite) : Mur sacré renforcé (plus
+  // gros bouclier, plus long, + réduction de dégâts) pour vraiment encaisser, Lumière divine
+  // affaibli -- le Paladin soigne "de temps en temps" en complément, le Prêtre reste le vrai gros
+  // soin mono-cible (voir plus bas).
   murSacre: {
     id: 'murSacre', name: 'Mur sacré', shortLabel: 'Mur\nsacré', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character, target) {
-      // Bouclier + provocation (fusionnés) : le Paladin encaisse pendant qu'il force l'ennemi à
-      // le cibler, quelle que soit la menace des autres (voir updateEnemyAI).
-      const shield = 20 + Math.round(character.stats.force * 1.2);
+      // Bouclier + provocation + réduction de dégâts (fusionnés) : le Paladin encaisse pendant
+      // qu'il force l'ennemi à le cibler, quelle que soit la menace des autres (voir updateEnemyAI).
+      const now = performance.now();
+      const shield = 30 + Math.round(character.stats.force * 1.5);
       character.shieldHp = shield;
       character.shieldMax = shield;
-      character.shieldExpiresAt = performance.now() + 6000;
-      addThreat(character, 100, performance.now());
+      character.shieldExpiresAt = now + 8000;
+      character.damageReductionFactor = 0.25;
+      character.damageReductionUntil = now + 8000;
+      addThreat(character, 100, now);
       target.tauntedBy = character;
-      target.tauntUntil = performance.now() + 3000;
+      target.tauntUntil = now + 3000;
     },
   },
   lumiereDivine: {
     id: 'lumiereDivine', name: 'Lumière divine', shortLabel: 'Lumière\ndivine', targeting: 'ally', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character) {
-      const heal = 15 + Math.round(character.stats.savoir * 0.6);
+      const heal = 10 + Math.round(character.stats.savoir * 0.4);
       healCharacter(lowestHpAlly() || character, heal, character);
     },
   },
@@ -1266,14 +1273,23 @@ const SKILLS = {
   },
 
   // ============================== PRÊTRE (Intelligence/Savoir, distance) ==============================
+  // Gros soin mono-cible du jeu (demande utilisateur explicite) : Soin majeur pose un stack de
+  // "Grâce" (jusqu'à PRIEST_GRACE_MAX) à chaque lancer, consommé par le PROCHAIN soin (ici Mot de
+  // douleur, son soin de zone) pour un bonus cumulatif -- enchaîner Soin majeur avant de déclencher
+  // Mot de douleur rentabilise l'attente. Mot de douleur rend aussi un peu de mana à qui il soigne.
   motDeDouleur: {
     id: 'motDeDouleur', name: 'Mot de douleur', shortLabel: 'Mot de\ndouleur', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character, target) {
       const { amount, crit } = computeStatDamage(character, 'intelligence', 0.5);
       if (dealDamage(target, amount, '245, 245, 245', character, crit, 'Mot de douleur')) {
-        const heal = Math.round(amount * 0.25);
+        const graceStacks = character.priestGraceStacks || 0;
+        character.priestGraceStacks = 0;
+        const heal = Math.round(amount * 0.25 * (1 + graceStacks * 0.1));
+        const manaRestore = Math.round(character.stats.savoir * 0.2);
         for (const c of characters) {
-          if (c.playerControlled && c.hp > 0) healCharacter(c, heal, character);
+          if (!c.playerControlled || c.hp <= 0) continue;
+          healCharacter(c, heal, character);
+          if (manaRestore > 0) c.mana = Math.min(c.manaMax, c.mana + manaRestore);
         }
       }
     },
@@ -1316,6 +1332,8 @@ const SKILLS = {
       const recentlyHit = performance.now() - (target.lastDamageTakenAt || 0) <= 3000;
       const heal = Math.round(character.stats.savoir * (recentlyHit ? 1.1 : 0.9));
       healCharacter(target, heal, character);
+      // Pose un stack de Grâce (jusqu'à 5) consommé par le prochain Mot de douleur -- voir plus haut.
+      character.priestGraceStacks = Math.min(5, (character.priestGraceStacks || 0) + 1);
     },
   },
 
@@ -1380,10 +1398,14 @@ const SKILLS = {
   },
 
   // ============================== CHAMAN (Intelligence, mêlée) ==============================
+  // Couteau suisse (demande utilisateur explicite) : le plus mauvais DPS ET le plus mauvais
+  // soigneur du jeu pris isolément (dégâts directs réduits ici, soin déjà le plus bas du roster),
+  // compensé par un Totem qui devient un vrai gros bonus de zone (+20% dégâts et soin conséquent)
+  // pour le groupe positionné dessus.
   frappeDesEsprits: {
     id: 'frappeDesEsprits', name: 'Frappe des esprits', shortLabel: 'Frappe\nesprits', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character, target) {
-      const { amount, crit } = computeStatDamage(character, 'intelligence', 0.9);
+      const { amount, crit } = computeStatDamage(character, 'intelligence', 0.7);
       if (dealDamage(target, amount, '236, 64, 122', character, crit, 'Frappe des esprits')) {
         target.damageTakenBonusFactor = 0.15;
         target.damageTakenBonusUntil = performance.now() + 5000;
@@ -1393,7 +1415,7 @@ const SKILLS = {
   chaineDEclairs: {
     id: 'chaineDEclairs', name: "Chaîne d'éclairs", shortLabel: "Chaîne\nd'éclairs", targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character, target) {
-      const { amount, crit } = computeStatDamage(character, 'intelligence', 0.5);
+      const { amount, crit } = computeStatDamage(character, 'intelligence', 0.4);
       dealDamage(target, amount, '255, 213, 79', character, crit, "Chaîne d'éclairs");
       if (Math.random() < 2 / 3) {
         // Rebondit UNIQUEMENT sur un autre ennemi vivant -- jamais sur la cible déjà touchée
@@ -1403,7 +1425,7 @@ const SKILLS = {
         const others = enemies.filter((e) => e !== target && e.hp > 0);
         if (others.length > 0) {
           const bounceTarget = others[Math.floor(Math.random() * others.length)];
-          const { amount: amount2, crit: crit2 } = computeStatDamage(character, 'intelligence', 0.3);
+          const { amount: amount2, crit: crit2 } = computeStatDamage(character, 'intelligence', 0.25);
           dealDamage(bounceTarget, amount2, '255, 213, 79', character, crit2, "Chaîne d'éclairs (rebond)");
         }
       }
@@ -1422,12 +1444,21 @@ const SKILLS = {
   totem: {
     id: 'totem', name: 'Totem', shortLabel: 'Totem', targeting: 'ally', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character) {
+      // Gros bonus de zone (demande utilisateur explicite : +20% dégâts et un vrai soin, pas un
+      // petit bonus) mais seulement pour qui reste posté sur le totem (ZONE_RADIUS, comme Cercle
+      // sacré) -- contrepartie du reste du kit volontairement faible, ça doit se mériter par le
+      // positionnement plutôt que d'être un buff de groupe gratuit et permanent.
+      // Le soin du Totem reste volontairement minime (le Chaman doit rester le plus mauvais
+      // soigneur du roster, demande utilisateur explicite) : le "gros boost" est presque
+      // entièrement porté par les dégâts (+20%), pas par le soin.
+      const now = performance.now();
       const heal = Math.round(character.stats.savoir * 0.15);
       for (const c of characters) {
         if (!c.playerControlled || c.hp <= 0) continue;
+        if (Math.hypot(c.x - character.x, c.y - character.y) > ZONE_RADIUS) continue;
         healCharacter(c, heal, character);
-        c.damageOutputMultiplier = 1.15;
-        c.damageOutputUntil = performance.now() + 6000;
+        c.damageOutputMultiplier = 1.2;
+        c.damageOutputUntil = now + 8000;
       }
     },
   },
@@ -2759,6 +2790,7 @@ function resetTransientCombatState(entity) {
   entity.pyroBurnStacks = 0;
   entity.pyroBurnExpiresAt = 0;
   entity.pyroBurnNextTickAt = 0;
+  entity.priestGraceStacks = 0;
 }
 
 // Remet les 4 personnages en place au début d'un combat (PV/mana pleins, plus d'effets ni de
