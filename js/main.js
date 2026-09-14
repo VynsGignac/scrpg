@@ -52,7 +52,6 @@ const AVOID_MARGIN = 4;
 
 const cx = window.innerWidth / 2;
 const cy = window.innerHeight / 2;
-const SPACING = 140;
 
 // ------------------------------------------------------------
 // Modèle "joueur qui loue un personnage" : deux niveaux distincts.
@@ -137,38 +136,63 @@ function createEmptyEquipment() {
   return equipment;
 }
 
-const squareXs = [cx - SPACING, cx, cx + SPACING];
-const chosenClasses = shuffle(CHARACTER_CLASSES).slice(0, 3);
-const chosenNames = shuffle(FIRST_NAMES).slice(0, 3);
+// ------------------------------------------------------------
+// Guilde (voir scène "Guilde") : le joueur possède les 11 classes (roster), mais seules 4 partent
+// en donjon à la fois (activePartyIndices, choisi sur cette scène). Les carrés de combat
+// (characters, plus bas) ne sont pas des personnages figés : ce sont 4 "emplacements" dans
+// lesquels on branche l'entrée du roster choisie -- appliqué à chaque nouveau combat (voir
+// applyActivePartyToCombatSlots/resetCombatEncounter), comme l'unique ennemi est déjà reconfiguré
+// à chaque rond de la carte du Monde. Les 4 joueurs (humains simulés), eux, restent attachés à
+// leur emplacement (pas à un personnage précis) : ils louent celui qu'on y place.
+// ------------------------------------------------------------
+const PARTY_SIZE = 4;
+const SLOT_SPACING = 100;
+const squareXs = Array.from({ length: PARTY_SIZE }, (_, i) => cx + (i - (PARTY_SIZE - 1) / 2) * SLOT_SPACING);
 
-const players = [];
-const characters = [];
-
-for (let i = 0; i < 3; i++) {
+const roster = CHARACTER_CLASSES.map((className, i) => {
   const stats = randomCharacterStats();
   // PV = Endurance x10, Mana = Savoir x10 (demande utilisateur explicite).
   const hpMax = stats.endurance * 10;
   const manaMax = stats.savoir * 10;
-
-  characters.push({
-    x: squareXs[i], y: cy, size: CHARACTER_SIZE, color: CLASS_COLORS[chosenClasses[i]] || '#4fc3f7',
+  return {
+    rosterId: i, // identité stable dans le roster, indépendante de l'emplacement de combat occupé
+    x: cx, y: cy, size: CHARACTER_SIZE, color: CLASS_COLORS[className] || '#4fc3f7',
     selected: false, isMoving: false,
-    playerControlled: true, index: i + 1, className: chosenClasses[i], level: 1, xp: 0,
-    label: chosenClasses[i].charAt(0), // ex. "M" pour Mage -- affiché sur le carré (voir drawCharacter)
+    playerControlled: true, index: 0, className, level: 1, xp: 0,
+    label: className.charAt(0), // ex. "M" pour Mage -- affiché sur le carré (voir drawCharacter)
     stats, hp: hpMax, hpMax, mana: manaMax, manaMax, threat: 0, lastThreatAt: 0,
     equipment: createEmptyEquipment(),
-  });
+  };
+});
 
-  players.push({
-    index: i + 1,
-    name: chosenNames[i],
-    level: 1, xp: 0,
-    skills: { apm: randomInt(0, 5), connaissanceJeu: randomInt(0, 5) },
-  });
+const chosenNames = shuffle(FIRST_NAMES).slice(0, PARTY_SIZE);
+const players = chosenNames.map((name, i) => ({
+  index: i + 1,
+  name,
+  level: 1, xp: 0,
+  skills: { apm: randomInt(0, 5), connaissanceJeu: randomInt(0, 5) },
+}));
+
+// Les 4 premières classes tirées au hasard forment le groupe de départ.
+let activePartyIndices = shuffle(roster.map((c) => c.rosterId)).slice(0, PARTY_SIZE);
+
+const characters = [];
+
+// Branche le groupe actif (voir activePartyIndices, modifié depuis la scène Guilde) sur les 4
+// emplacements de combat -- rappelé à chaque nouveau combat (voir resetCombatEncounter), donc un
+// changement de composition dans la Guilde ne prend effet qu'au prochain donjon lancé, jamais en
+// pleine bataille.
+function applyActivePartyToCombatSlots() {
+  for (let slot = 0; slot < PARTY_SIZE; slot++) {
+    const rosterChar = roster[activePartyIndices[slot]] || roster[slot];
+    rosterChar.index = slot + 1;
+    characters[slot] = rosterChar;
+  }
 }
+applyActivePartyToCombatSlots();
 
 // Les 5 combats de la carte du Monde (voir drawWorldScene) : un seul emplacement d'ennemi existe
-// dans le jeu (characters[3]), reconfiguré à chaque rond choisi (voir resetCombatEncounter) --
+// dans le jeu (characters[PARTY_SIZE]), reconfiguré à chaque rond choisi (voir resetCombatEncounter) --
 // taille, PV, couleur, dégâts (melee ou à distance) et lettre affichée sur le carré changent,
 // pas le reste du moteur de combat (évitement, riposte passive, etc., déjà génériques).
 const ENCOUNTERS = [
@@ -2366,113 +2390,132 @@ function drawPlayerScene() {
 // Scène "Personnage" : la liste des personnages loués (classe, niveau, caractéristiques). Simple
 // affichage pour l'instant -- pas encore de points à répartir ici, contrairement aux compétences
 // du joueur ci-dessus.
+const STAT_ROWS = [
+  ['Force', 'force'],
+  ['Agilité', 'agilite'],
+  ['Endurance', 'endurance'],
+  ['Intelligence', 'intelligence'],
+  ['Savoir', 'savoir'],
+];
+const STAT_MAX = 20;
+let expandedRosterCharacter = null; // personnage du roster dont le détail est déplié
+
+// Détail complet d'un personnage du roster (XP, caractéristiques, équipement) -- déplié sous sa
+// ligne compacte dans la scène Personnage quand on tape dessus. Renvoie la hauteur utilisée.
+function drawRosterCharacterDetail(character, x, y, width) {
+  let rowY = y + 10;
+  const xpNeeded = xpToNextLevel(character.level);
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.font = '11px sans-serif';
+  ctx.fillStyle = '#ffffff99';
+  ctx.fillText(`XP ${character.xp}/${xpNeeded}`, x, rowY);
+  ctx.fillStyle = '#ffffff14';
+  ctx.fillRect(x, rowY + 4, width, 5);
+  ctx.fillStyle = '#ffd54f';
+  ctx.fillRect(x, rowY + 4, width * Math.min(character.xp / xpNeeded, 1), 5);
+  rowY += 24;
+
+  const labelWidth = 90;
+  const valueColWidth = 28;
+  const barX = x + labelWidth;
+  const barWidth = width - labelWidth - valueColWidth;
+  for (const [label, key] of STAT_ROWS) {
+    const value = character.stats[key];
+    ctx.font = '12px sans-serif';
+    ctx.fillStyle = '#ffffffcc';
+    ctx.fillText(label, x, rowY + 9);
+    ctx.fillStyle = '#ffffff14';
+    ctx.fillRect(barX, rowY, barWidth, 10);
+    ctx.fillStyle = character.color;
+    ctx.fillRect(barX, rowY, barWidth * Math.min(value / STAT_MAX, 1), 10);
+    ctx.textAlign = 'right';
+    ctx.fillText(String(value), x + width, rowY + 9);
+    ctx.textAlign = 'left';
+    rowY += 20;
+  }
+
+  rowY += 6;
+  ctx.font = '11px sans-serif';
+  ctx.fillStyle = '#ffffff99';
+  ctx.fillText('Équipement', x, rowY + 8);
+  rowY += 14;
+
+  const slotGap = 4;
+  const slotSize = Math.min(30, (width - (EQUIPMENT_SLOTS.length - 1) * slotGap) / EQUIPMENT_SLOTS.length);
+  let slotX = x;
+  for (const eqSlot of EQUIPMENT_SLOTS) {
+    const item = character.equipment[eqSlot.key];
+    ctx.fillStyle = '#ffffff10';
+    ctx.fillRect(slotX, rowY, slotSize, slotSize);
+    ctx.strokeStyle = '#ffffff33';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(slotX + 0.5, rowY + 0.5, slotSize - 1, slotSize - 1);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `${Math.max(7, Math.round(slotSize * 0.32))}px sans-serif`;
+    ctx.fillStyle = '#ffffff55';
+    ctx.fillText(item ? item.label : eqSlot.label.slice(0, 2), slotX + slotSize / 2, rowY + slotSize / 2 + 1);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    slotX += slotSize + slotGap;
+  }
+  rowY += slotSize + 8;
+
+  return rowY - y;
+}
+
+// Scène "Personnage" : tout le roster (les 11 classes possédées), pas seulement les 4 actuellement
+// en donjon -- demande utilisateur explicite (voir la scène Guilde pour choisir qui part). Une
+// ligne compacte par personnage (11 ne tiennent pas tous en détail complet sans défilement, qui
+// n'existe pas dans ce jeu) ; taper une ligne déplie son détail (XP/stats/équipement).
 function drawCharacterScene() {
   const cardX = LIST_PADDING_X;
   const cardWidth = canvas.width - LIST_PADDING_X * 2;
-  const cardHeight = 232;
+  const rowHeight = 54;
   let y = TOP_BANNER_HEIGHT + 16;
 
-  const STAT_MAX = 20;
-  const statRows = [
-    ['Force', 'force'],
-    ['Agilité', 'agilite'],
-    ['Endurance', 'endurance'],
-    ['Intelligence', 'intelligence'],
-    ['Savoir', 'savoir'],
-  ];
-
-  for (const character of characters.filter((c) => c.playerControlled)) {
-    const player = players.find((p) => p.index === character.index);
+  for (const character of roster) {
+    const slot = activePartyIndices.indexOf(character.rosterId);
+    const inParty = slot !== -1;
+    const player = inParty ? players[slot] : null;
+    const expanded = expandedRosterCharacter === character;
 
     ctx.fillStyle = '#ffffff0d';
-    ctx.fillRect(cardX, y, cardWidth, cardHeight);
-    ctx.strokeStyle = '#ffffff22';
+    ctx.fillRect(cardX, y, cardWidth, rowHeight);
+    ctx.strokeStyle = inParty ? '#ffd54f55' : '#ffffff22';
     ctx.lineWidth = 1;
-    ctx.strokeRect(cardX + 0.5, y + 0.5, cardWidth - 1, cardHeight - 1);
+    ctx.strokeRect(cardX + 0.5, y + 0.5, cardWidth - 1, rowHeight - 1);
 
     ctx.fillStyle = character.color;
     ctx.fillRect(cardX + CARD_PADDING, y + CARD_PADDING - 1, 14, 14);
 
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
-    ctx.font = 'bold 15px sans-serif';
+    ctx.font = 'bold 14px sans-serif';
     ctx.fillStyle = '#ffffff';
-    ctx.fillText(`${character.className}  ·  Niveau ${character.level}`, cardX + CARD_PADDING + 22, y + CARD_PADDING + 11);
+    ctx.fillText(`${character.className}  ·  Niveau ${character.level}`, cardX + CARD_PADDING + 22, y + 21);
 
-    if (player) {
-      ctx.textAlign = 'right';
-      ctx.font = '12px sans-serif';
-      ctx.fillStyle = '#ffffffaa';
-      ctx.fillText(`Loué par ${player.name}`, cardX + cardWidth - CARD_PADDING, y + CARD_PADDING + 11);
-      ctx.textAlign = 'left';
-    }
-
-    // Barre d'XP -- valeurs provisoires (voir VICTORY_XP/xpToNextLevel), juste le mécanisme.
-    let rowY = y + CARD_PADDING + 26;
-    const xpNeeded = xpToNextLevel(character.level);
-    const fullWidth = cardWidth - CARD_PADDING * 2;
     ctx.font = '11px sans-serif';
-    ctx.fillStyle = '#ffffff99';
-    ctx.fillText(`XP ${character.xp}/${xpNeeded}`, cardX + CARD_PADDING, rowY);
-    ctx.fillStyle = '#ffffff14';
-    ctx.fillRect(cardX + CARD_PADDING, rowY + 4, fullWidth, 5);
+    ctx.fillStyle = inParty ? '#ffd54f' : '#ffffff77';
+    ctx.fillText(inParty ? `En donjon · ${player.name}` : 'Au repos', cardX + CARD_PADDING + 22, y + 37);
+
+    ctx.textAlign = 'right';
+    ctx.font = 'bold 13px sans-serif';
     ctx.fillStyle = '#ffd54f';
-    ctx.fillRect(cardX + CARD_PADDING, rowY + 4, fullWidth * Math.min(character.xp / xpNeeded, 1), 5);
-    rowY += 22;
+    ctx.fillText(expanded ? '▾' : '▸', cardX + cardWidth - 12, y + rowHeight / 2 + 4);
+    ctx.textAlign = 'left';
 
-    const labelWidth = 90;
-    const valueColWidth = 28;
-    const barX = cardX + CARD_PADDING + labelWidth;
-    const barWidth = cardWidth - CARD_PADDING * 2 - labelWidth - valueColWidth;
+    registerHitRect(cardX, y, cardWidth, rowHeight, () => {
+      expandedRosterCharacter = expandedRosterCharacter === character ? null : character;
+    });
 
-    for (const [label, key] of statRows) {
-      const value = character.stats[key];
-      ctx.font = '12px sans-serif';
-      ctx.fillStyle = '#ffffffcc';
-      ctx.fillText(label, cardX + CARD_PADDING, rowY + 9);
+    y += rowHeight + 6;
 
-      ctx.fillStyle = '#ffffff14';
-      ctx.fillRect(barX, rowY, barWidth, 10);
-      ctx.fillStyle = character.color;
-      ctx.fillRect(barX, rowY, barWidth * Math.min(value / STAT_MAX, 1), 10);
-
-      ctx.textAlign = 'right';
-      ctx.fillText(String(value), cardX + cardWidth - CARD_PADDING, rowY + 9);
-      ctx.textAlign = 'left';
-
-      rowY += 20;
+    if (expanded) {
+      const detailHeight = drawRosterCharacterDetail(character, cardX + CARD_PADDING, y, cardWidth - CARD_PADDING * 2);
+      y += detailHeight + 10;
     }
-
-    // Équipement -- emplacements vides pour l'instant, aucun objet n'existe encore dans le jeu.
-    rowY += 6;
-    ctx.font = '11px sans-serif';
-    ctx.fillStyle = '#ffffff99';
-    ctx.fillText('Équipement', cardX + CARD_PADDING, rowY + 8);
-    rowY += 14;
-
-    const slotGap = 4;
-    const slotSize = Math.min(30, (fullWidth - (EQUIPMENT_SLOTS.length - 1) * slotGap) / EQUIPMENT_SLOTS.length);
-    let slotX = cardX + CARD_PADDING;
-    for (const slot of EQUIPMENT_SLOTS) {
-      const item = character.equipment[slot.key];
-      ctx.fillStyle = '#ffffff10';
-      ctx.fillRect(slotX, rowY, slotSize, slotSize);
-      ctx.strokeStyle = '#ffffff33';
-      ctx.lineWidth = 1;
-      ctx.strokeRect(slotX + 0.5, rowY + 0.5, slotSize - 1, slotSize - 1);
-
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.font = `${Math.max(7, Math.round(slotSize * 0.32))}px sans-serif`;
-      ctx.fillStyle = '#ffffff55';
-      ctx.fillText(item ? item.label : slot.label.slice(0, 2), slotX + slotSize / 2, rowY + slotSize / 2 + 1);
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'alphabetic';
-
-      slotX += slotSize + slotGap;
-    }
-
-    y += cardHeight + CARD_GAP;
   }
 }
 
@@ -2563,6 +2606,10 @@ function resetCombatEncounter(levelIndex) {
     enemy.y = spawn.y;
   }
 
+  // Rebranche le groupe actif (voir scène Guilde) sur les 4 emplacements de combat : une
+  // composition changée depuis la dernière bataille ne prend effet qu'à partir d'ici.
+  applyActivePartyToCombatSlots();
+
   let i = 0;
   for (const character of characters) {
     if (!character.playerControlled) continue;
@@ -2652,6 +2699,69 @@ function drawCheckmark(x, y, size) {
   ctx.lineTo(x + size * 0.36, y - size * 0.3);
   ctx.stroke();
   ctx.lineCap = 'butt';
+}
+
+// Retire ou ajoute un personnage du roster au groupe actif (voir activePartyIndices) -- déjà 4
+// sélectionnés : le tap est ignoré tant qu'on n'en a pas d'abord retiré un (pas de remplacement
+// automatique, pour que ce soit un choix explicite). Ne prend effet en combat qu'au prochain
+// donjon lancé (voir applyActivePartyToCombatSlots, appelé par resetCombatEncounter).
+function toggleGuildMembership(character) {
+  const idx = activePartyIndices.indexOf(character.rosterId);
+  if (idx !== -1) {
+    activePartyIndices.splice(idx, 1);
+  } else if (activePartyIndices.length < PARTY_SIZE) {
+    activePartyIndices.push(character.rosterId);
+  }
+}
+
+// Scène "Guilde" : choisit lesquels des 11 personnages du roster (4 au maximum) partent en
+// donjon -- demande utilisateur explicite. Un tap sur une ligne bascule son appartenance au groupe.
+function drawGuildeScene() {
+  const cardX = LIST_PADDING_X;
+  const cardWidth = canvas.width - LIST_PADDING_X * 2;
+  let y = TOP_BANNER_HEIGHT + 16;
+
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.font = 'bold 15px sans-serif';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(`Groupe pour le donjon : ${activePartyIndices.length}/${PARTY_SIZE}`, cardX, y + 14);
+  y += 34;
+
+  const rowHeight = 50;
+  for (const character of roster) {
+    const inParty = activePartyIndices.includes(character.rosterId);
+
+    ctx.fillStyle = inParty ? '#ffd54f1a' : '#ffffff0d';
+    ctx.fillRect(cardX, y, cardWidth, rowHeight);
+    ctx.strokeStyle = inParty ? '#ffd54f' : '#ffffff22';
+    ctx.lineWidth = inParty ? 2 : 1;
+    ctx.strokeRect(cardX + 0.5, y + 0.5, cardWidth - 1, rowHeight - 1);
+
+    ctx.fillStyle = character.color;
+    ctx.fillRect(cardX + CARD_PADDING, y + rowHeight / 2 - 8, 16, 16);
+
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 13px sans-serif';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(`${character.className}  ·  Niv. ${character.level}`, cardX + CARD_PADDING + 24, y + rowHeight / 2);
+
+    if (inParty) {
+      drawCheckmark(cardX + cardWidth - 22, y + rowHeight / 2, 18);
+    } else {
+      ctx.textAlign = 'right';
+      ctx.font = 'bold 16px sans-serif';
+      ctx.fillStyle = '#ffffff44';
+      ctx.fillText('+', cardX + cardWidth - 16, y + rowHeight / 2 + 5);
+      ctx.textAlign = 'left';
+    }
+    ctx.textBaseline = 'alphabetic';
+
+    registerHitRect(cardX, y, cardWidth, rowHeight, () => toggleGuildMembership(character));
+
+    y += rowHeight + 6;
+  }
 }
 
 function drawWorldScene() {
@@ -2782,6 +2892,8 @@ function draw() {
     drawCharacterScene();
   } else if (currentScene === 'monde') {
     drawWorldScene();
+  } else if (currentScene === 'guilde') {
+    drawGuildeScene();
   } else {
     drawPlaceholderScene(currentScene);
   }
