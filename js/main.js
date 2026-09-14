@@ -1799,6 +1799,19 @@ let dragTargetEnemy = null; // ennemi survolé pendant le drag -- voir pointermo
 let pressedEnemy = null; // ennemi sous le doigt au pointerdown (hors personnage), voir pointerup
 let threatPanelEnemy = null; // ennemi dont on affiche l'ordre de menace (clic dessus), voir drawThreatPanel
 
+// Appui long (tactile) sur une case survolable (ex. "Compétences", voir hoverRects) : équivalent
+// tactile du survol souris (demande utilisateur explicite -- un doigt ne "survole" jamais sans
+// contact, donc on affiche le détail tant que le doigt reste posé dessus, plutôt qu'au survol).
+const LONG_PRESS_MS = 350;
+let longPressTimer = null;
+
+function clearLongPress() {
+  if (longPressTimer) {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+  }
+}
+
 function getPointerPos(event) {
   const rect = canvas.getBoundingClientRect();
   return { x: event.clientX - rect.left, y: event.clientY - rect.top };
@@ -1852,6 +1865,8 @@ function clearPointerState() {
   dragging = false;
   dragPreviewPath = [];
   dragTargetEnemy = null;
+  clearLongPress();
+  hoveredSkillsCharacter = null;
 }
 
 canvas.addEventListener('pointerdown', (event) => {
@@ -1872,6 +1887,19 @@ canvas.addEventListener('pointerdown', (event) => {
   const hit = hitTestInteractiveRects(x, y);
   if (hit) {
     hit.onClick();
+    return;
+  }
+
+  // Appui (tactile ou souris) sur une case survolable : démarre le minuteur d'appui long --
+  // voir clearLongPress (pointerup/pointercancel/pointerleave) et le pointermove de survol
+  // ci-dessous (souris uniquement, ignoré ici pour éviter d'afficher deux fois).
+  const hoverHit = hitTestHoverRects(x, y);
+  if (hoverHit) {
+    clearLongPress();
+    longPressTimer = setTimeout(() => {
+      longPressTimer = null;
+      hoveredSkillsCharacter = hoverHit;
+    }, LONG_PRESS_MS);
     return;
   }
 
@@ -1914,14 +1942,21 @@ canvas.addEventListener('pointermove', (event) => {
 });
 
 // Survol (souris/web) indépendant du drag ci-dessus -- toujours actif, pas seulement pendant un
-// appui (voir hoverRects/registerHoverRect). Ignoré sur tactile en pratique : un doigt ne "survole"
-// jamais sans contact.
+// appui (voir hoverRects/registerHoverRect). Explicitement ignoré sur tactile (pointerType
+// 'touch') : le doigt utilise l'appui long géré dans pointerdown/pointerup à la place.
 canvas.addEventListener('pointermove', (event) => {
+  if (event.pointerType === 'touch') return;
   const { x, y } = getPointerPos(event);
   hoveredSkillsCharacter = hitTestHoverRects(x, y);
 });
 
 canvas.addEventListener('pointerup', (event) => {
+  // Relâche l'appui long en cours (voir pointerdown) et masque la bulle de détail affichée --
+  // indépendant de pointerActive, qui n'est jamais mis à true pour un appui sur une case
+  // survolable (voir le retour anticipé dans pointerdown).
+  clearLongPress();
+  hoveredSkillsCharacter = null;
+
   if (!pointerActive) return;
   const { x, y } = getPointerPos(event);
   const dist = Math.hypot(x - pointerDownX, y - pointerDownY);
@@ -1961,7 +1996,7 @@ canvas.addEventListener('pointerup', (event) => {
 });
 
 canvas.addEventListener('pointercancel', clearPointerState);
-canvas.addEventListener('pointerleave', () => { hoveredSkillsCharacter = null; });
+canvas.addEventListener('pointerleave', () => { clearLongPress(); hoveredSkillsCharacter = null; });
 // Filet de sécurité : si l'app passe en arrière-plan (changement d'app, verrouillage...) pendant
 // un drag, on ne reçoit pas forcément de pointerup/pointercancel propre.
 window.addEventListener('blur', clearPointerState);
