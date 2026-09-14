@@ -771,6 +771,44 @@ function updateDotEffects(character, now) {
   }
 }
 
+// ------------------------------------------------------------------
+// Brûlure du Pyromane (Boule de feu / Pluie de feu) -- système à part du DOT générique ci-dessus
+// (demande utilisateur explicite) : jusqu'à PYRO_BURN_MAX_STACKS stacks cumulables, l'un ou
+// l'autre des deux sorts en ajoute un (jusqu'au plafond) et rafraîchit la durée à chaque
+// application. La durée (PYRO_BURN_DURATION_MS) dépasse volontairement SKILL_COOLDOWN_MS : tant
+// que Boule de feu/Pluie de feu sont relancés à chaque cycle, la brûlure ne retombe jamais à 0 --
+// l'objectif de jeu est de maintenir les 3 stacks en continu. Un cycle manqué la laisse expirer
+// entièrement (retour à 0), ce qui crée un vrai enjeu d'entretien plutôt qu'un simple DOT passif.
+// ------------------------------------------------------------------
+const PYRO_BURN_MAX_STACKS = 3;
+const PYRO_BURN_DURATION_MS = 22000; // > SKILL_COOLDOWN_MS (20000) : survit à un cycle complet si entretenu
+const PYRO_BURN_TICK_MS = 1000;
+const PYRO_BURN_TICK_COEFFICIENT = 0.07; // par stack, appliqué à l'Intelligence du lanceur
+
+function applyPyroBurnStack(target, character) {
+  const now = performance.now();
+  target.pyroBurnStacks = Math.min(PYRO_BURN_MAX_STACKS, (target.pyroBurnStacks || 0) + 1);
+  target.pyroBurnSource = character;
+  target.pyroBurnDamagePerTick = Math.round(character.stats.intelligence * PYRO_BURN_TICK_COEFFICIENT);
+  target.pyroBurnExpiresAt = now + PYRO_BURN_DURATION_MS;
+  if (!target.pyroBurnNextTickAt || target.pyroBurnNextTickAt <= now) {
+    target.pyroBurnNextTickAt = now + PYRO_BURN_TICK_MS;
+  }
+}
+
+function updatePyroBurn(character, now) {
+  if (!character.pyroBurnStacks) return;
+  if (now >= character.pyroBurnExpiresAt) {
+    character.pyroBurnStacks = 0;
+    return;
+  }
+  if (now >= character.pyroBurnNextTickAt) {
+    const total = character.pyroBurnDamagePerTick * character.pyroBurnStacks;
+    dealDamage(character, total, '255, 87, 34', character.pyroBurnSource, false, 'Brûlure');
+    character.pyroBurnNextTickAt = now + PYRO_BURN_TICK_MS;
+  }
+}
+
 // Expire un bouclier (Mur sacré, Bouclier de flammes, Pacte de protection...) une fois sa durée
 // écoulée -- sa quantité de PV absorbés, elle, est déjà consommée au fil des coups reçus par
 // dealDamage ci-dessus. Pacte de protection (Sorcier) est vengeur : à l'expiration, renvoie les
@@ -814,6 +852,9 @@ const ZONE_RADIUS = 220; // rayon des sorts de zone centrés sur le lanceur (ex.
 // Cri de rage qui dépasse +100% une fois les paliers hauts atteints -- accumuler un stack complet
 // prend du temps, donc seul un combat long en tire pleinement parti, voir criDeRage plus bas).
 const RAGE_MAX = 10;
+// Génération augmentée (demande utilisateur explicite) : atteindre les paliers hauts doit rester
+// jouable sur une durée de combat réaliste (cap atteint en moins de 2 cycles au lieu de 5).
+const RAGE_GAIN_PER_CAST = 3;
 
 const SKILLS = {
   // ============================== GUERRIER (Force, mêlée) ==============================
@@ -825,7 +866,7 @@ const SKILLS = {
     cast(character, target) {
       const { amount, crit } = computeStatDamage(character, 'force', 0.9);
       dealDamage(target, amount, '158, 158, 158', character, crit, 'Frappe rageuse');
-      character.rage = Math.min(RAGE_MAX, (character.rage || 0) + 1);
+      character.rage = Math.min(RAGE_MAX, (character.rage || 0) + RAGE_GAIN_PER_CAST);
     },
   },
   tourbillon: {
@@ -835,7 +876,7 @@ const SKILLS = {
         if (enemy.hp <= 0) continue;
         const { amount, crit } = computeStatDamage(character, 'force', 0.6);
         dealDamage(enemy, amount, '158, 158, 158', character, crit, 'Tourbillon');
-        character.rage = Math.min(RAGE_MAX, (character.rage || 0) + 1);
+        character.rage = Math.min(RAGE_MAX, (character.rage || 0) + RAGE_GAIN_PER_CAST);
       }
     },
   },
@@ -854,7 +895,11 @@ const SKILLS = {
       const stacks = character.rage || 0;
       character.rage = 0;
       character.damageOutputMultiplier = 1 + stacks * 0.15;
-      character.damageOutputUntil = performance.now() + 5000;
+      // La durée du buff grandit aussi avec la Rage dépensée (demande utilisateur explicite,
+      // +1.5s par stack en plus du socle de 5s) -- hoarder pour un gros dump n'est donc plus
+      // seulement plus fort, c'est aussi plus long : dump souvent (petits bonus courts) ne
+      // rapporte plus autant sur la durée qu'attendre les paliers hauts.
+      character.damageOutputUntil = performance.now() + 5000 + stacks * 1500;
     },
   },
 
@@ -1061,19 +1106,16 @@ const SKILLS = {
   },
 
   // ============================== PYROMANE (Intelligence, distance) -- feu uniquement ==============================
-  // Profil revu (demande utilisateur explicite) : moins de dégâts directs, brûlures plus fortes et
-  // plus longues -- le Pyromane doit devenir le meilleur DPS sur la durée plutôt qu'à l'instant T,
-  // les brûlures ayant le temps de monter en puissance sur un combat long (voir aussi Explosion,
-  // qui consomme ces brûlures pour un burst d'autant plus gros qu'elles ont eu le temps de s'accumuler).
+  // Profil revu (demande utilisateur explicite) : moins de dégâts directs, brûlure à stacks (voir
+  // applyPyroBurnStack/updatePyroBurn plus haut) -- le Pyromane doit devenir le meilleur DPS sur
+  // la durée, l'objectif de jeu étant de maintenir 3 stacks en continu plutôt que de détoner
+  // systématiquement (voir Explosion, qui ne convertit plus que la moitié de la brûlure).
   bouleDeFeu: {
     id: 'bouleDeFeu', name: 'Boule de feu', shortLabel: 'Boule\nde feu', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character, target) {
       const { amount, crit } = computeStatDamage(character, 'intelligence', 0.45);
       if (dealDamage(target, amount, '255, 112, 67', character, crit, 'Boule de feu')) {
-        applyDot(target, {
-          kind: 'burn', ticksLeft: 6, tickIntervalMs: 1000, rgb: '255, 87, 34', source: character,
-          skillName: 'Boule de feu (brûlure)', damagePerTick: Math.round(character.stats.intelligence * 0.22),
-        });
+        applyPyroBurnStack(target, character);
       }
     },
   },
@@ -1084,10 +1126,7 @@ const SKILLS = {
         if (enemy.hp <= 0) continue;
         const { amount, crit } = computeStatDamage(character, 'intelligence', 0.25);
         if (dealDamage(enemy, amount, '255, 112, 67', character, crit, 'Pluie de feu')) {
-          applyDot(enemy, {
-            kind: 'burn', ticksLeft: 4, tickIntervalMs: 1000, rgb: '255, 87, 34', source: character,
-            skillName: 'Pluie de feu (brûlure)', damagePerTick: Math.round(character.stats.intelligence * 0.15),
-          });
+          applyPyroBurnStack(enemy, character);
         }
       }
     },
@@ -1105,12 +1144,16 @@ const SKILLS = {
   explosion: {
     id: 'explosion', name: 'Explosion', shortLabel: 'Explosion', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character, target) {
-      // Consomme toutes les brûlures actives sur la cible (posées par n'importe quel sort du
-      // Pyromane) pour un gros burst immédiat, en plus des dégâts de base.
-      const burns = (target.dotEffects || []).filter((d) => d.kind === 'burn');
-      let consumed = 0;
-      for (const dot of burns) consumed += dot.ticksLeft * dot.damagePerTick;
-      target.dotEffects = (target.dotEffects || []).filter((d) => d.kind !== 'burn');
+      // Détone les stacks de brûlure actifs pour un burst immédiat -- ne convertit plus que la
+      // moitié de leur valeur (demande utilisateur explicite : détoner a un vrai coût
+      // d'opportunité face à l'entretien des 3 stacks sur la durée, qui rapporte plus dans la
+      // durée que le burst). Remet les stacks à 0 : il faut reconstruire après avoir détoné.
+      const stacks = target.pyroBurnStacks || 0;
+      const bankedTicks = 5; // valeur "type" d'entretien convertie, indépendante du minuteur d'expiration
+      const consumed = stacks > 0
+        ? Math.round((target.pyroBurnDamagePerTick || 0) * stacks * bankedTicks * 0.5)
+        : 0;
+      if (stacks > 0) target.pyroBurnStacks = 0;
 
       const { amount, crit } = computeStatDamage(character, 'intelligence', 0.3);
       dealDamage(target, amount + consumed, '255, 87, 34', character, crit, 'Explosion');
@@ -2713,6 +2756,9 @@ function resetTransientCombatState(entity) {
   entity.rage = 0;
   entity.epidemieNextThreshold = 0;
   entity.guaranteedBackstabUntil = 0;
+  entity.pyroBurnStacks = 0;
+  entity.pyroBurnExpiresAt = 0;
+  entity.pyroBurnNextTickAt = 0;
 }
 
 // Remet les 4 personnages en place au début d'un combat (PV/mana pleins, plus d'effets ni de
@@ -3198,6 +3244,7 @@ function loop(now) {
   for (const character of characters) {
     updateCombat(character, now);
     updateDotEffects(character, now);
+    updatePyroBurn(character, now);
     updateShield(character, now);
     updateManaRegen(character, dt);
   }
