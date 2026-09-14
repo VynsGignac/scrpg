@@ -115,7 +115,7 @@ for (let i = 0; i < 3; i++) {
     x: squareXs[i], y: cy, size: CHARACTER_SIZE, color: squareColors[i], selected: false, isMoving: false,
     playerControlled: true, index: i + 1, className: chosenClasses[i], level: randomInt(1, 100),
     label: chosenClasses[i].charAt(0), // ex. "M" pour Mage -- affiché sur le carré (voir drawCharacter)
-    stats, hp: hpMax, hpMax, mana: manaMax, manaMax,
+    stats, hp: hpMax, hpMax, mana: manaMax, manaMax, threat: 0, lastThreatAt: 0,
   });
 
   players.push({
@@ -251,16 +251,62 @@ function orderAttack(character, enemy) {
   approachForCombat(character, enemy);
 }
 
-// IA d'un ennemi (voir ENCOUNTERS) : choisit un personnage au hasard dès sa première évaluation
-// et le garde comme cible pour tout le combat (jamais de changement de cible tant qu'il est
-// vivant). S'approche pour l'attaquer (corps à corps ou à distance selon l'ennemi, voir
-// approachForCombat) tant qu'il n'est pas à portée -- comme la cible peut elle-même se déplacer
-// entre-temps, il recalcule sa route à chaque fois qu'il arrive quelque part sans être à portée.
+// ------------------------------------------------------------
+// Menace ("aggro") : chaque personnage du joueur a une menace (character.threat) qui augmente
+// quand il inflige des dégâts, en subit, ou soigne (voir dealDamage/healCharacter) -- un seul
+// ennemi actif à la fois dans ce jeu, donc pas besoin d'une menace par ennemi séparée. Calculée
+// paresseusement (pas de décroissance tick par tick) : le total accumulé (threat) et l'instant du
+// dernier événement (lastThreatAt) suffisent pour retrouver la valeur courante à tout moment, qui
+// décroît linéairement à partir de cet instant pour atteindre exactement 0 après THREAT_DECAY_MS
+// sans nouvel événement (demande utilisateur explicite : "5 secondes d'inactivité -> menace 0").
+// ------------------------------------------------------------
+const THREAT_DECAY_MS = 5000;
+
+function addThreat(character, amount, now) {
+  if (!character.playerControlled || amount <= 0) return;
+  character.threat = (character.threat || 0) + amount;
+  character.lastThreatAt = now;
+}
+
+function effectiveThreat(character, now) {
+  const elapsed = now - (character.lastThreatAt || 0);
+  if (elapsed >= THREAT_DECAY_MS) return 0;
+  return Math.max(0, (character.threat || 0) * (1 - elapsed / THREAT_DECAY_MS));
+}
+
+function highestThreatPlayer(now) {
+  let best = null;
+  let bestThreat = -1;
+  for (const c of characters) {
+    if (!c.playerControlled || c.hp <= 0) continue;
+    const t = effectiveThreat(c, now);
+    if (t > bestThreat) {
+      bestThreat = t;
+      best = c;
+    }
+  }
+  return { best, bestThreat };
+}
+
+// IA d'un ennemi (voir ENCOUNTERS) : attaque le personnage qui a le plus de menace vis-à-vis de
+// lui (voir highestThreatPlayer) -- peut donc changer de cible en cours de combat si quelqu'un
+// d'autre prend l'aggro. Tant que personne n'a encore généré de menace (tout juste engagé), une
+// cible aléatoire de repli est choisie UNE FOIS et gardée telle quelle (sinon, en tirant au sort
+// à chaque image tant que tout le monde est à 0, il changerait d'avis en permanence sans jamais
+// se décider à approcher qui que ce soit). S'approche pour attaquer (corps à corps ou à distance
+// selon l'ennemi, voir approachForCombat) tant qu'il n'est pas à portée -- comme la cible peut
+// elle-même se déplacer entre-temps, il recalcule sa route à chaque fois qu'il arrive quelque
+// part sans être à portée.
 function updateEnemyAI(enemy, now) {
   if (enemy.hp <= 0 || combatPhase !== 'active') return;
-  if (!enemy.attackTarget) {
-    const alivePlayers = characters.filter((c) => c.playerControlled && c.hp > 0);
-    if (alivePlayers.length === 0) return;
+
+  const alivePlayers = characters.filter((c) => c.playerControlled && c.hp > 0);
+  if (alivePlayers.length === 0) return;
+
+  const { best, bestThreat } = highestThreatPlayer(now);
+  if (best && bestThreat > 0) {
+    enemy.attackTarget = best;
+  } else if (!enemy.attackTarget || enemy.attackTarget.hp <= 0) {
     enemy.attackTarget = alivePlayers[Math.floor(Math.random() * alivePlayers.length)];
   }
 
@@ -335,7 +381,7 @@ function updateCombat(character, now) {
   character.lastAttackAt = now;
   const combat = combatProfile(character);
   const damage = 4 + Math.round((character.stats[combat.stat] || 10) / 3);
-  dealDamage(target, damage, '255, 112, 67');
+  dealDamage(target, damage, '255, 112, 67', character);
 }
 
 // Texte flottant montrant les dégâts/soins (voir dealDamage, healCharacter, updateDotEffects) :
@@ -378,8 +424,11 @@ function drawFloatingTexts(now) {
 
 // Inflige des dégâts à "target" en consommant d'abord son éventuel bouclier (voir Mur sacré),
 // puis affiche le nombre flottant correspondant. Le moindre dégât reçu par un ennemi démarre le
-// combat pour de bon, même pendant le compte à rebours du pull (voir combatPhase en tête de fichier).
-function dealDamage(target, amount, rgb) {
+// combat pour de bon, même pendant le compte à rebours du pull (voir combatPhase en tête de
+// fichier). Génère aussi de la menace (voir plus haut) : pour l'attaquant s'il tape un ennemi,
+// pour la cible elle-même si c'est un ennemi qui la frappe -- "source" est facultatif (ex. les
+// dégâts environnementaux n'en génèrent pas).
+function dealDamage(target, amount, rgb, source) {
   if (!target.playerControlled && combatPhase !== 'active') combatPhase = 'active';
 
   let remaining = amount;
@@ -390,15 +439,26 @@ function dealDamage(target, amount, rgb) {
   }
   target.hp = Math.max(0, target.hp - remaining);
   spawnFloatingText(target.x + (Math.random() - 0.5) * 24, target.y - target.size / 2 - 34, `-${amount}`, rgb);
+
+  const now = performance.now();
+  if (!target.playerControlled && source && source.playerControlled) {
+    addThreat(source, amount, now); // le joueur inflige des dégâts à l'ennemi
+  } else if (target.playerControlled && source && !source.playerControlled) {
+    addThreat(target, amount, now); // le joueur subit des dégâts de l'ennemi
+  }
 }
 
-function healCharacter(target, amount) {
+// Soigner génère de la menace pour le soigneur, au même titre que les dégâts (demande
+// utilisateur explicite) -- y compris en se soignant soi-même (source === target).
+function healCharacter(target, amount, source) {
   target.hp = Math.min(target.hpMax, target.hp + amount);
   spawnFloatingText(target.x + (Math.random() - 0.5) * 24, target.y - target.size / 2 - 34, `+${amount}`, '129, 199, 132');
+  if (source && source.playerControlled) addThreat(source, amount, performance.now());
 }
 
 // Effet à tick (brûlure/saignement) : inflige damagePerTick toutes les tickIntervalMs, ticksLeft
-// fois, indépendamment de qui l'a posé (le lanceur n'a plus besoin d'être présent/en vie).
+// fois. Garde une référence à qui l'a posé (spec.source) pour continuer à générer de la menace en
+// son nom à chaque tick, même si le lanceur bouge ou fait autre chose entre-temps.
 function applyDot(target, spec) {
   if (!target.dotEffects) target.dotEffects = [];
   target.dotEffects.push({ ...spec, nextTickAt: performance.now() + spec.tickIntervalMs });
@@ -409,7 +469,7 @@ function updateDotEffects(character, now) {
   for (let i = character.dotEffects.length - 1; i >= 0; i--) {
     const dot = character.dotEffects[i];
     if (now >= dot.nextTickAt) {
-      dealDamage(character, dot.damagePerTick, dot.rgb);
+      dealDamage(character, dot.damagePerTick, dot.rgb, dot.source);
       dot.ticksLeft -= 1;
       dot.nextTickAt = now + dot.tickIntervalMs;
     }
@@ -449,9 +509,9 @@ const SKILLS = {
     id: 'bouleDeFeu', name: 'Boule de feu', shortLabel: 'Boule\nde feu', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character, target) {
       const damage = 10 + Math.round(character.stats.intelligence * 0.8);
-      dealDamage(target, damage, '255, 112, 67');
+      dealDamage(target, damage, '255, 112, 67', character);
       applyDot(target, {
-        kind: 'burn', ticksLeft: 3, tickIntervalMs: 1000, rgb: '255, 87, 34',
+        kind: 'burn', ticksLeft: 3, tickIntervalMs: 1000, rgb: '255, 87, 34', source: character,
         damagePerTick: 3 + Math.round(character.stats.intelligence * 0.2),
       });
     },
@@ -460,7 +520,7 @@ const SKILLS = {
     id: 'traitDeGivre', name: 'Trait de givre', shortLabel: 'Trait de\ngivre', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character, target) {
       const damage = 8 + Math.round(character.stats.intelligence * 0.6);
-      dealDamage(target, damage, '79, 195, 247');
+      dealDamage(target, damage, '79, 195, 247', character);
       // Ralentit les déplacements de la cible -- sans effet visible sur le boss actuel, qui ne
       // se déplace jamais, mais prêt pour un futur ennemi mobile.
       target.slowMultiplier = 0.5;
@@ -472,16 +532,16 @@ const SKILLS = {
     cast(character, target) {
       const base = 8 + Math.round(character.stats.agilite * 0.8);
       const damage = isBehind(character, target) ? base * 2 : base;
-      dealDamage(target, damage, '186, 104, 200');
+      dealDamage(target, damage, '186, 104, 200', character);
     },
   },
   surinage: {
     id: 'surinage', name: 'Surinage', shortLabel: 'Surinage', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character, target) {
       const damage = 6 + Math.round(character.stats.agilite * 0.5);
-      dealDamage(target, damage, '229, 57, 53');
+      dealDamage(target, damage, '229, 57, 53', character);
       applyDot(target, {
-        kind: 'bleed', ticksLeft: 4, tickIntervalMs: 800, rgb: '229, 57, 53',
+        kind: 'bleed', ticksLeft: 4, tickIntervalMs: 800, rgb: '229, 57, 53', source: character,
         damagePerTick: 2 + Math.round(character.stats.agilite * 0.15),
       });
     },
@@ -490,7 +550,7 @@ const SKILLS = {
     id: 'lumiereDivine', name: 'Lumière divine', shortLabel: 'Lumière\ndivine', targeting: 'ally', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character) {
       const heal = 15 + Math.round(character.stats.savoir * 0.6);
-      healCharacter(lowestHpAlly() || character, heal);
+      healCharacter(lowestHpAlly() || character, heal, character);
     },
   },
   murSacre: {
@@ -761,6 +821,8 @@ let pointerDownX = 0, pointerDownY = 0;
 let dragging = false;
 let dragPreviewPath = [];
 let dragTargetEnemy = null; // ennemi survolé pendant le drag -- voir pointermove
+let pressedEnemy = null; // ennemi sous le doigt au pointerdown (hors personnage), voir pointerup
+let threatPanelEnemy = null; // ennemi dont on affiche l'ordre de menace (clic dessus), voir drawThreatPanel
 
 function getPointerPos(event) {
   const rect = canvas.getBoundingClientRect();
@@ -811,6 +873,7 @@ function clearPointerState() {
   pointerId = null;
   pointerActive = false;
   activeTarget = null;
+  pressedEnemy = null;
   dragging = false;
   dragPreviewPath = [];
   dragTargetEnemy = null;
@@ -843,6 +906,8 @@ canvas.addEventListener('pointerdown', (event) => {
   pointerId = event.pointerId;
   pointerActive = true;
   activeTarget = hitTestCharacter(x, y);
+  // Un ennemi cliqué (pas un drag) affiche son ordre de menace -- voir pointerup.
+  pressedEnemy = activeTarget ? null : hitTestEnemyAt(x, y);
   pointerDownX = x;
   pointerDownY = y;
   dragging = false;
@@ -898,8 +963,13 @@ canvas.addEventListener('pointerup', (event) => {
         startMove(activeTarget, x, y);
       }
     }
+  } else if (pressedEnemy && dist <= CLICK_THRESHOLD) {
+    // Clic sur un ennemi (pas un drag) : affiche/masque son ordre de menace -- un deuxième clic
+    // sur le même ennemi referme le panneau.
+    threatPanelEnemy = threatPanelEnemy === pressedEnemy ? null : pressedEnemy;
   } else if (dist <= CLICK_THRESHOLD) {
     deselectAll(); // clic dans le vide : désélectionne tout
+    threatPanelEnemy = null;
   }
 
   clearPointerState();
@@ -981,6 +1051,51 @@ function drawEnemyHealthBar(enemy) {
   ctx.font = '10px sans-serif';
   ctx.fillStyle = '#ffffffcc';
   ctx.fillText(`${Math.max(enemy.hp, 0)}/${enemy.hpMax}`, enemy.x, barY - 3);
+}
+
+// Panneau d'ordre de menace : s'affiche au clic sur un ennemi (voir pointerup), liste les
+// personnages du joueur du plus menaçant au moins menaçant vis-à-vis de LUI. Juste la lettre de
+// classe (voir character.label) plutôt que le prénom complet, demande utilisateur explicite.
+function drawThreatPanel(enemy, now) {
+  const ranked = characters
+    .filter((c) => c.playerControlled)
+    .map((c) => ({ c, threat: effectiveThreat(c, now) }))
+    .sort((a, b) => b.threat - a.threat);
+
+  const panelWidth = 128;
+  const rowHeight = 24;
+  const headerHeight = 28;
+  const panelHeight = headerHeight + ranked.length * rowHeight + 8;
+
+  let panelX = enemy.x + enemy.size / 2 + 14;
+  if (panelX + panelWidth > canvas.width - 8) panelX = enemy.x - enemy.size / 2 - 14 - panelWidth;
+  panelX = Math.max(8, Math.min(panelX, canvas.width - panelWidth - 8));
+  let panelY = enemy.y - panelHeight / 2;
+  panelY = Math.max(TOP_BANNER_HEIGHT + 8, Math.min(panelY, canvas.height - panelHeight - 8));
+
+  ctx.fillStyle = 'rgba(16, 21, 26, 0.95)';
+  ctx.fillRect(panelX, panelY, panelWidth, panelHeight);
+  ctx.strokeStyle = '#ffffff33';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(panelX + 0.5, panelY + 0.5, panelWidth - 1, panelHeight - 1);
+
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.font = 'bold 12px sans-serif';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText('Menace', panelX + 10, panelY + headerHeight / 2 + 4);
+
+  ranked.forEach((entry, i) => {
+    const rowY = panelY + headerHeight + i * rowHeight + rowHeight / 2;
+    ctx.font = 'bold 13px sans-serif';
+    ctx.fillStyle = i === 0 ? '#ffd54f' : '#ffffffcc';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${i + 1}. ${entry.c.label}`, panelX + 10, rowY);
+    ctx.font = '11px sans-serif';
+    ctx.fillStyle = '#ffffff99';
+    ctx.textAlign = 'right';
+    ctx.fillText(String(Math.round(entry.threat)), panelX + panelWidth - 10, rowY);
+  });
 }
 
 // Habillage de la phase de combat (voir combatPhase en tête de fichier) : bouton "Pull" avant le
@@ -1463,6 +1578,8 @@ function resetCombatEncounter(levelIndex) {
     character.cooldowns = {};
     character.dotEffects = [];
     character.attackTarget = null;
+    character.threat = 0;
+    character.lastThreatAt = 0;
     character.isMoving = false;
     character.pathPoints = [];
     character.selected = false;
@@ -1476,6 +1593,7 @@ function enterCombatLevel(index) {
   currentWorldLevel = index;
   combatOutcomeHandled = false;
   combatPhase = 'prePull';
+  threatPanelEnemy = null;
   resetCombatEncounter(index);
   currentScene = 'combat';
 }
@@ -1616,6 +1734,7 @@ function draw() {
 
     drawFloatingTexts(performance.now());
     drawPullOverlay(performance.now());
+    if (threatPanelEnemy) drawThreatPanel(threatPanelEnemy, performance.now());
 
     const selected = characters.find((c) => c.selected);
     if (selected) drawSelectionBanner(selected);
