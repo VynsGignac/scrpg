@@ -128,7 +128,7 @@ for (let i = 0; i < 3; i++) {
 // Boss : plus gros, pas contrôlable par le joueur, a une barre de vie (voir drawEnemyHealthBar).
 // Choisit un personnage au hasard à sa première action et le poursuit/attaque pendant tout le
 // combat (voir updateBossAI) -- ne change jamais de cible.
-const BOSS_HP_MAX = 200;
+const BOSS_HP_MAX = 5000;
 const bossSpawn = clampPointToField({ size: ENEMY_SIZE }, cx, cy - 220);
 characters.push({
   x: bossSpawn.x, y: bossSpawn.y, size: ENEMY_SIZE, color: '#c62828', selected: false, isMoving: false,
