@@ -107,14 +107,32 @@ function shuffle(list) {
   return copy;
 }
 
-function randomCharacterStats() {
-  return {
-    force: randomInt(3, 18),
-    agilite: randomInt(3, 18),
-    endurance: randomInt(3, 18),
-    intelligence: randomInt(3, 18),
-    savoir: randomInt(3, 18),
-  };
+// Caractéristiques de départ par classe (40 points au total pour chacune, demande utilisateur
+// explicite) :
+// - Endurance fixe selon le style de combat (voir CLASS_COMBAT.melee) : 8 pour les corps à corps
+//   (Guerrier/Barbare/Paladin/Voleur/Chaman), 6 pour les classes à distance.
+// - Au moins 10 points dans la caractéristique principale (Force pour les classes physiques,
+//   Intelligence pour les classes magiques -- même caractéristique que CLASS_COMBAT.stat, qui
+//   déterminait déjà les dégâts de l'attaque de base).
+// - Le reste (Agilité/Savoir/et le complément de la principale) réparti selon l'archétype de
+//   chaque classe : Voleur/Chasseur misent sur l'Agilité, Paladin/Druide/Prêtre sur le Savoir
+//   (soin), Barbare/Mage tout sur les dégâts, etc.
+const CLASS_STATS = {
+  Guerrier: { force: 14, agilite: 10, endurance: 8, intelligence: 3, savoir: 5 },
+  Barbare: { force: 16, agilite: 6, endurance: 8, intelligence: 3, savoir: 7 },
+  Paladin: { force: 12, agilite: 5, endurance: 8, intelligence: 3, savoir: 12 },
+  Voleur: { force: 13, agilite: 15, endurance: 8, intelligence: 2, savoir: 2 },
+  Chaman: { force: 6, agilite: 4, endurance: 8, intelligence: 12, savoir: 10 },
+  Mage: { force: 4, agilite: 6, endurance: 6, intelligence: 18, savoir: 6 },
+  Pyromane: { force: 4, agilite: 8, endurance: 6, intelligence: 17, savoir: 5 },
+  Chasseur: { force: 14, agilite: 14, endurance: 6, intelligence: 3, savoir: 3 },
+  Druide: { force: 4, agilite: 4, endurance: 6, intelligence: 12, savoir: 14 },
+  'Prêtre': { force: 3, agilite: 5, endurance: 6, intelligence: 10, savoir: 16 },
+  Sorcier: { force: 4, agilite: 6, endurance: 6, intelligence: 16, savoir: 8 },
+};
+
+function statsForClass(className) {
+  return { ...(CLASS_STATS[className] || { force: 8, agilite: 8, endurance: 8, intelligence: 8, savoir: 8 }) };
 }
 
 // Emplacements d'équipement d'un personnage -- vides pour l'instant, aucun objet n'existe encore
@@ -150,7 +168,7 @@ const SLOT_SPACING = 100;
 const squareXs = Array.from({ length: PARTY_SIZE }, (_, i) => cx + (i - (PARTY_SIZE - 1) / 2) * SLOT_SPACING);
 
 const roster = CHARACTER_CLASSES.map((className, i) => {
-  const stats = randomCharacterStats();
+  const stats = statsForClass(className);
   // PV = Endurance x10, Mana = Savoir x10 (demande utilisateur explicite).
   const hpMax = stats.endurance * 10;
   const manaMax = stats.savoir * 10;
