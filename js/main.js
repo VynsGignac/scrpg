@@ -68,9 +68,28 @@ const FIRST_NAMES = [
   'Sarah', 'Maxime', 'Julie', 'Thomas', 'Laura', 'Antoine', 'Marie', 'Lucas', 'Inès', 'Adam',
   'Océane', 'Noah', 'Zoé', 'Gabriel', 'Lina', 'Ethan', 'Jade', 'Léo', 'Anna', 'Mathis',
 ];
-// Limité aux 3 classes qui ont des compétences définies (voir SKILLS/CLASS_SKILLS) -- Guerrier,
-// Archère et Barbare reviendront quand leurs sorts seront définis à leur tour.
+// Limité aux 3 classes qui ont des compétences définies (voir SKILLS/CLASS_SKILLS) -- les autres
+// (couleurs déjà définies ci-dessous) rejoindront la sélection quand leurs sorts le seront aussi.
 const CHARACTER_CLASSES = ['Mage', 'Voleur', 'Paladin'];
+
+// Couleur de chaque classe (demande utilisateur explicite) -- le carré du personnage prend
+// directement la couleur de sa classe (voir sa création plus bas), plutôt qu'une couleur par
+// position comme avant. Sorcier (noir) est éclairci en gris très foncé : un carré vraiment noir
+// se fondrait dans le fond du canvas (#10151a) et deviendrait quasi invisible/impossible à toucher.
+const CLASS_COLORS = {
+  Guerrier: '#9e9e9e',
+  Barbare: '#e53935',
+  Paladin: '#ffc107',
+  Voleur: '#8e24aa',
+  Mage: '#2196f3',
+  Pyromane: '#fb8c00',
+  Chasseur: '#8bc34a',
+  Druide: '#1b5e20',
+  Pretre: '#f5f5f5',
+  Sorcier: '#3a3a3a',
+  Chaman: '#ec407a',
+};
+
 const SKILL_MAX = 10;
 
 function randomInt(min, max) {
@@ -115,7 +134,6 @@ function createEmptyEquipment() {
   return equipment;
 }
 
-const squareColors = ['#4fc3f7', '#ff8a65', '#aed581'];
 const squareXs = [cx - SPACING, cx, cx + SPACING];
 const chosenClasses = shuffle(CHARACTER_CLASSES).slice(0, 3);
 const chosenNames = shuffle(FIRST_NAMES).slice(0, 3);
@@ -130,7 +148,8 @@ for (let i = 0; i < 3; i++) {
   const manaMax = stats.savoir * 10;
 
   characters.push({
-    x: squareXs[i], y: cy, size: CHARACTER_SIZE, color: squareColors[i], selected: false, isMoving: false,
+    x: squareXs[i], y: cy, size: CHARACTER_SIZE, color: CLASS_COLORS[chosenClasses[i]] || '#4fc3f7',
+    selected: false, isMoving: false,
     playerControlled: true, index: i + 1, className: chosenClasses[i], level: 1, xp: 0,
     label: chosenClasses[i].charAt(0), // ex. "M" pour Mage -- affiché sur le carré (voir drawCharacter)
     stats, hp: hpMax, hpMax, mana: manaMax, manaMax, threat: 0, lastThreatAt: 0,
