@@ -111,24 +111,28 @@ function shuffle(list) {
 // explicite) :
 // - Endurance fixe selon le style de combat (voir CLASS_COMBAT.melee) : 8 pour les corps à corps
 //   (Guerrier/Barbare/Paladin/Voleur/Chaman), 6 pour les classes à distance.
-// - Au moins 10 points dans la caractéristique principale (Force pour les classes physiques,
-//   Intelligence pour les classes magiques -- même caractéristique que CLASS_COMBAT.stat, qui
-//   déterminait déjà les dégâts de l'attaque de base).
-// - Le reste (Agilité/Savoir/et le complément de la principale) réparti selon l'archétype de
-//   chaque classe : Voleur/Chasseur misent sur l'Agilité, Paladin/Druide/Prêtre sur le Savoir
-//   (soin), Barbare/Mage tout sur les dégâts, etc.
+// - Caractéristique "hors sujet" à 0 : Intelligence pour les classes physiques, Force pour les
+//   classes magiques -- une classe ne pioche jamais dans la stat de l'autre camp.
+// - Au moins 10 points dans la caractéristique principale (Force pour les physiques, Intelligence
+//   pour les magiques -- même caractéristique que CLASS_COMBAT.stat, qui détermine déjà les
+//   dégâts de l'attaque de base).
+// - Le reste (Agilité/Savoir) réparti selon l'usage réel de chaque classe dans ses sorts (voir
+//   SKILLS) plutôt qu'au hasard : Savoir seulement pour celles qui ont du soin dans leur kit
+//   (Paladin/Chaman/Druide/Prêtre -- 0 pour les autres, qui n'ont aucun sort basé dessus),
+//   Agilité seulement pour celles à l'aise en évasion/critique (Voleur/Chasseur/Guerrier/Barbare
+//   -- faible à nul pour les casters purs, qui misent tout sur leur stat principale).
 const CLASS_STATS = {
-  Guerrier: { force: 14, agilite: 10, endurance: 8, intelligence: 3, savoir: 5 },
-  Barbare: { force: 16, agilite: 6, endurance: 8, intelligence: 3, savoir: 7 },
-  Paladin: { force: 12, agilite: 5, endurance: 8, intelligence: 3, savoir: 12 },
-  Voleur: { force: 13, agilite: 15, endurance: 8, intelligence: 2, savoir: 2 },
-  Chaman: { force: 6, agilite: 4, endurance: 8, intelligence: 12, savoir: 10 },
-  Mage: { force: 4, agilite: 6, endurance: 6, intelligence: 18, savoir: 6 },
-  Pyromane: { force: 4, agilite: 8, endurance: 6, intelligence: 17, savoir: 5 },
-  Chasseur: { force: 14, agilite: 14, endurance: 6, intelligence: 3, savoir: 3 },
-  Druide: { force: 4, agilite: 4, endurance: 6, intelligence: 12, savoir: 14 },
-  'Prêtre': { force: 3, agilite: 5, endurance: 6, intelligence: 10, savoir: 16 },
-  Sorcier: { force: 4, agilite: 6, endurance: 6, intelligence: 16, savoir: 8 },
+  Guerrier: { force: 20, agilite: 10, endurance: 8, intelligence: 0, savoir: 2 },
+  Barbare: { force: 26, agilite: 4, endurance: 8, intelligence: 0, savoir: 2 },
+  Paladin: { force: 10, agilite: 2, endurance: 8, intelligence: 0, savoir: 20 },
+  Voleur: { force: 12, agilite: 20, endurance: 8, intelligence: 0, savoir: 0 },
+  Chaman: { force: 0, agilite: 4, endurance: 8, intelligence: 16, savoir: 12 },
+  Mage: { force: 0, agilite: 6, endurance: 6, intelligence: 28, savoir: 0 },
+  Pyromane: { force: 0, agilite: 6, endurance: 6, intelligence: 28, savoir: 0 },
+  Chasseur: { force: 18, agilite: 16, endurance: 6, intelligence: 0, savoir: 0 },
+  Druide: { force: 0, agilite: 2, endurance: 6, intelligence: 14, savoir: 18 },
+  'Prêtre': { force: 0, agilite: 0, endurance: 6, intelligence: 10, savoir: 24 },
+  Sorcier: { force: 0, agilite: 6, endurance: 6, intelligence: 28, savoir: 0 },
 };
 
 function statsForClass(className) {
