@@ -290,10 +290,11 @@ function highestThreatPlayer(now) {
 
 // IA d'un ennemi (voir ENCOUNTERS) : attaque le personnage qui a le plus de menace vis-à-vis de
 // lui (voir highestThreatPlayer) -- peut donc changer de cible en cours de combat si quelqu'un
-// d'autre prend l'aggro. Tant que personne n'a encore généré de menace (tout juste engagé), une
-// cible aléatoire de repli est choisie UNE FOIS et gardée telle quelle (sinon, en tirant au sort
-// à chaque image tant que tout le monde est à 0, il changerait d'avis en permanence sans jamais
-// se décider à approcher qui que ce soit). S'approche pour attaquer (corps à corps ou à distance
+// d'autre prend l'aggro. Une provocation active (Fierté du juste) prend le pas sur la menace tant
+// qu'elle dure. Tant que personne n'a encore généré de menace (tout juste engagé), une cible
+// aléatoire de repli est choisie UNE FOIS et gardée telle quelle (sinon, en tirant au sort à
+// chaque image tant que tout le monde est à 0, il changerait d'avis en permanence sans jamais se
+// décider à approcher qui que ce soit). S'approche pour attaquer (corps à corps ou à distance
 // selon l'ennemi, voir approachForCombat) tant qu'il n'est pas à portée -- comme la cible peut
 // elle-même se déplacer entre-temps, il recalcule sa route à chaque fois qu'il arrive quelque
 // part sans être à portée.
@@ -303,11 +304,15 @@ function updateEnemyAI(enemy, now) {
   const alivePlayers = characters.filter((c) => c.playerControlled && c.hp > 0);
   if (alivePlayers.length === 0) return;
 
-  const { best, bestThreat } = highestThreatPlayer(now);
-  if (best && bestThreat > 0) {
-    enemy.attackTarget = best;
-  } else if (!enemy.attackTarget || enemy.attackTarget.hp <= 0) {
-    enemy.attackTarget = alivePlayers[Math.floor(Math.random() * alivePlayers.length)];
+  if ((enemy.tauntUntil || 0) > now && enemy.tauntedBy && enemy.tauntedBy.hp > 0) {
+    enemy.attackTarget = enemy.tauntedBy;
+  } else {
+    const { best, bestThreat } = highestThreatPlayer(now);
+    if (best && bestThreat > 0) {
+      enemy.attackTarget = best;
+    } else if (!enemy.attackTarget || enemy.attackTarget.hp <= 0) {
+      enemy.attackTarget = alivePlayers[Math.floor(Math.random() * alivePlayers.length)];
+    }
   }
 
   const target = enemy.attackTarget;
@@ -427,8 +432,23 @@ function drawFloatingTexts(now) {
 // combat pour de bon, même pendant le compte à rebours du pull (voir combatPhase en tête de
 // fichier). Génère aussi de la menace (voir plus haut) : pour l'attaquant s'il tape un ennemi,
 // pour la cible elle-même si c'est un ennemi qui la frappe -- "source" est facultatif (ex. les
-// dégâts environnementaux n'en génèrent pas).
+// dégâts environnementaux n'en génèrent pas). Renvoie true si le coup a bien porté, false s'il a
+// été complètement évité (Déphasage/Forme d'ombre) -- les sorts qui posent un effet secondaire
+// (brûlure, ralentissement...) doivent vérifier ce retour avant de l'appliquer.
 function dealDamage(target, amount, rgb, source) {
+  const now = performance.now();
+
+  // Déphasage (Mage) : insensible à tout dégât, et ne peut plus non plus en infliger tant que
+  // ça dure -- vérifié des deux côtés (cible ET source).
+  if (target.playerControlled && (target.phaseUntil || 0) > now) return false;
+  if (source && source.playerControlled && (source.phaseUntil || 0) > now) return false;
+
+  // Forme d'ombre (Voleur) : chance d'esquiver entièrement l'attaque.
+  if (target.playerControlled && (target.dodgeUntil || 0) > now && Math.random() < (target.dodgeChance || 0)) {
+    spawnFloatingText(target.x + (Math.random() - 0.5) * 24, target.y - target.size / 2 - 34, 'Esquive', '255, 255, 255');
+    return false;
+  }
+
   if (!target.playerControlled && combatPhase !== 'active') combatPhase = 'active';
 
   let remaining = amount;
@@ -440,12 +460,12 @@ function dealDamage(target, amount, rgb, source) {
   target.hp = Math.max(0, target.hp - remaining);
   spawnFloatingText(target.x + (Math.random() - 0.5) * 24, target.y - target.size / 2 - 34, `-${amount}`, rgb);
 
-  const now = performance.now();
   if (!target.playerControlled && source && source.playerControlled) {
     addThreat(source, amount, now); // le joueur inflige des dégâts à l'ennemi
   } else if (target.playerControlled && source && !source.playerControlled) {
     addThreat(target, amount, now); // le joueur subit des dégâts de l'ennemi
   }
+  return true;
 }
 
 // Soigner génère de la menace pour le soigneur, au même titre que les dégâts (demande
@@ -509,22 +529,25 @@ const SKILLS = {
     id: 'bouleDeFeu', name: 'Boule de feu', shortLabel: 'Boule\nde feu', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character, target) {
       const damage = 10 + Math.round(character.stats.intelligence * 0.8);
-      dealDamage(target, damage, '255, 112, 67', character);
-      applyDot(target, {
-        kind: 'burn', ticksLeft: 3, tickIntervalMs: 1000, rgb: '255, 87, 34', source: character,
-        damagePerTick: 3 + Math.round(character.stats.intelligence * 0.2),
-      });
+      // La brûlure ne se pose que si le coup a réellement porté (pas esquivé/déphasage).
+      if (dealDamage(target, damage, '255, 112, 67', character)) {
+        applyDot(target, {
+          kind: 'burn', ticksLeft: 3, tickIntervalMs: 1000, rgb: '255, 87, 34', source: character,
+          damagePerTick: 3 + Math.round(character.stats.intelligence * 0.2),
+        });
+      }
     },
   },
   traitDeGivre: {
     id: 'traitDeGivre', name: 'Trait de givre', shortLabel: 'Trait de\ngivre', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character, target) {
       const damage = 8 + Math.round(character.stats.intelligence * 0.6);
-      dealDamage(target, damage, '79, 195, 247', character);
-      // Ralentit les déplacements de la cible -- sans effet visible sur le boss actuel, qui ne
-      // se déplace jamais, mais prêt pour un futur ennemi mobile.
-      target.slowMultiplier = 0.5;
-      target.slowUntil = performance.now() + 3000;
+      // Ralentit les déplacements de la cible (si le coup porte) -- sans effet visible sur le
+      // boss actuel, qui ne se déplace jamais, mais prêt pour un futur ennemi mobile.
+      if (dealDamage(target, damage, '79, 195, 247', character)) {
+        target.slowMultiplier = 0.5;
+        target.slowUntil = performance.now() + 3000;
+      }
     },
   },
   coupSournois: {
@@ -539,11 +562,12 @@ const SKILLS = {
     id: 'surinage', name: 'Surinage', shortLabel: 'Surinage', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character, target) {
       const damage = 6 + Math.round(character.stats.agilite * 0.5);
-      dealDamage(target, damage, '229, 57, 53', character);
-      applyDot(target, {
-        kind: 'bleed', ticksLeft: 4, tickIntervalMs: 800, rgb: '229, 57, 53', source: character,
-        damagePerTick: 2 + Math.round(character.stats.agilite * 0.15),
-      });
+      if (dealDamage(target, damage, '229, 57, 53', character)) {
+        applyDot(target, {
+          kind: 'bleed', ticksLeft: 4, tickIntervalMs: 800, rgb: '229, 57, 53', source: character,
+          damagePerTick: 2 + Math.round(character.stats.agilite * 0.15),
+        });
+      }
     },
   },
   lumiereDivine: {
@@ -562,12 +586,39 @@ const SKILLS = {
       character.shieldExpiresAt = performance.now() + 6000;
     },
   },
+  fierteDuJuste: {
+    id: 'fierteDuJuste', name: 'Fierté du juste', shortLabel: 'Fierté\ndu juste', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character, target) {
+      // Provoque : force l'ennemi à cibler ce personnage pendant 3s, quelle que soit la menace
+      // des autres (voir updateEnemyAI) -- et génère une grosse menace d'un coup pour que ça
+      // tienne encore une fois la provocation retombée.
+      addThreat(character, 100, performance.now());
+      target.tauntedBy = character;
+      target.tauntUntil = performance.now() + 3000;
+    },
+  },
+  formeDOmbre: {
+    id: 'formeDOmbre', name: "Forme d'ombre", shortLabel: "Forme\nd'ombre", targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character) {
+      // 25% d'esquiver complètement une attaque (voir dealDamage), pendant 5s.
+      character.dodgeChance = 0.25;
+      character.dodgeUntil = performance.now() + 5000;
+    },
+  },
+  dephasage: {
+    id: 'dephasage', name: 'Déphasage', shortLabel: 'Dépha-\nsage', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    cast(character) {
+      // Insensible à tout dégât/effet pendant 5s, mais ne peut plus non plus en infliger (voir
+      // dealDamage) -- le déplacement, lui, n'est pas concerné (rien dans updateMove n'en dépend).
+      character.phaseUntil = performance.now() + 5000;
+    },
+  },
 };
 
 const CLASS_SKILLS = {
-  Mage: ['bouleDeFeu', 'traitDeGivre'],
-  Paladin: ['lumiereDivine', 'murSacre'],
-  Voleur: ['coupSournois', 'surinage'],
+  Mage: ['bouleDeFeu', 'traitDeGivre', 'dephasage'],
+  Paladin: ['lumiereDivine', 'murSacre', 'fierteDuJuste'],
+  Voleur: ['coupSournois', 'surinage', 'formeDOmbre'],
 };
 
 // Même critère de "à portée" que l'attaque de base (voir updateCombat) : corps à corps = juste à
@@ -999,6 +1050,25 @@ function drawCharacter(character) {
     ctx.strokeStyle = '#80d8ffcc';
     ctx.lineWidth = 3;
     ctx.strokeRect(character.x - half - 3, character.y - half - 3, character.size + 6, character.size + 6);
+  }
+
+  // Forme d'ombre (Voleur) : liseré violet pointillé tant que l'esquive est active.
+  const now = performance.now();
+  if (!dead && (character.dodgeUntil || 0) > now) {
+    ctx.save();
+    ctx.setLineDash([5, 4]);
+    ctx.strokeStyle = '#ba68c8cc';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(character.x - half - 3, character.y - half - 3, character.size + 6, character.size + 6);
+    ctx.restore();
+  }
+
+  // Déphasage (Mage) : double liseré blanc tant que le personnage est insensible à tout (et ne
+  // peut plus infliger de dégâts, voir dealDamage).
+  if (!dead && (character.phaseUntil || 0) > now) {
+    ctx.strokeStyle = '#ffffffaa';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(character.x - half - 5, character.y - half - 5, character.size + 10, character.size + 10);
   }
 
   if (dead) {
@@ -1562,6 +1632,8 @@ function resetCombatEncounter(levelIndex) {
     enemy.stats = { force: encounter.statValue };
     enemy.attackTarget = null;
     enemy.dotEffects = [];
+    enemy.tauntedBy = null;
+    enemy.tauntUntil = 0;
     enemy.isMoving = false;
     enemy.pathPoints = [];
     const spawn = clampPointToField({ size: encounter.size }, cx, cy - 220);
@@ -1580,6 +1652,9 @@ function resetCombatEncounter(levelIndex) {
     character.attackTarget = null;
     character.threat = 0;
     character.lastThreatAt = 0;
+    character.dodgeChance = 0;
+    character.dodgeUntil = 0;
+    character.phaseUntil = 0;
     character.isMoving = false;
     character.pathPoints = [];
     character.selected = false;
