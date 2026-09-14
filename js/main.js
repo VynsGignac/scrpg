@@ -125,10 +125,9 @@ const characters = [];
 
 for (let i = 0; i < 3; i++) {
   const stats = randomCharacterStats();
-  // PV/mana dérivés des caractéristiques (endurance/intelligence) plutôt que des valeurs fixes,
-  // pour rester cohérents avec la classe et les stats désormais aléatoires du personnage.
-  const hpMax = 30 + stats.endurance * 4;
-  const manaMax = 10 + stats.intelligence * 4;
+  // PV = Endurance x10, Mana = Savoir x10 (demande utilisateur explicite).
+  const hpMax = stats.endurance * 10;
+  const manaMax = stats.savoir * 10;
 
   characters.push({
     x: squareXs[i], y: cy, size: CHARACTER_SIZE, color: squareColors[i], selected: false, isMoving: false,
@@ -193,13 +192,17 @@ function startMove(character, rawX, rawY) {
 // donc aucune logique de portée à ajouter pour eux. Distance (Mage/Archère) : s'approche
 // seulement jusqu'à RANGED_ATTACK_RANGE si trop loin, sinon attaque immédiatement sans bouger.
 // ------------------------------------------------------------
+// "stat" ici = la caractéristique qui détermine les dégâts de l'ATTAQUE DE BASE (100% de sa
+// valeur, voir updateCombat) : Force pour tout le monde, Intelligence pour les lanceurs de sorts
+// (Mage) -- demande utilisateur explicite. "melee" ne concerne lui que le comportement de
+// déplacement/portée (corps à corps ou à distance), indépendant de la caractéristique de dégâts.
 const CLASS_COMBAT = {
   Guerrier: { melee: true, stat: 'force' },
   Paladin: { melee: true, stat: 'force' },
   Barbare: { melee: true, stat: 'force' },
-  Voleur: { melee: true, stat: 'agilite' },
+  Voleur: { melee: true, stat: 'force' },
   Mage: { melee: false, stat: 'intelligence' },
-  Archère: { melee: false, stat: 'agilite' },
+  Archère: { melee: false, stat: 'force' },
 };
 const DEFAULT_COMBAT = { melee: true, stat: 'force' };
 const RANGED_ATTACK_RANGE = 220;
@@ -424,8 +427,9 @@ function updateCombat(character, now) {
 
   character.lastAttackAt = now;
   const combat = combatProfile(character);
-  const damage = 4 + Math.round((character.stats[combat.stat] || 10) / 3);
-  dealDamage(target, damage, '255, 112, 67', character);
+  // Attaque de base = 100% de la stat (Force, ou Intelligence pour les lanceurs de sorts).
+  const { amount, crit } = computeStatDamage(character, combat.stat, 1);
+  dealDamage(target, amount, '255, 112, 67', character, crit);
 }
 
 // Texte flottant montrant les dégâts/soins (voir dealDamage, healCharacter, updateDotEffects) :
@@ -471,10 +475,12 @@ function drawFloatingTexts(now) {
 // combat pour de bon, même pendant le compte à rebours du pull (voir combatPhase en tête de
 // fichier). Génère aussi de la menace (voir plus haut) : pour l'attaquant s'il tape un ennemi,
 // pour la cible elle-même si c'est un ennemi qui la frappe -- "source" est facultatif (ex. les
-// dégâts environnementaux n'en génèrent pas). Renvoie true si le coup a bien porté, false s'il a
-// été complètement évité (Déphasage/Forme d'ombre) -- les sorts qui posent un effet secondaire
-// (brûlure, ralentissement...) doivent vérifier ce retour avant de l'appliquer.
-function dealDamage(target, amount, rgb, source) {
+// dégâts environnementaux n'en génèrent pas). "isCrit" ne change que l'affichage (le montant est
+// déjà calculé par l'appelant, voir computeStatDamage). Renvoie true si le coup a bien porté,
+// false s'il a été complètement évité (Déphasage/Forme d'ombre/esquive d'Agilité) -- les sorts
+// qui posent un effet secondaire (brûlure, ralentissement...) doivent vérifier ce retour avant
+// de l'appliquer.
+function dealDamage(target, amount, rgb, source, isCrit) {
   const now = performance.now();
 
   // Déphasage (Mage) : insensible à tout dégât, et ne peut plus non plus en infliger tant que
@@ -482,10 +488,15 @@ function dealDamage(target, amount, rgb, source) {
   if (target.playerControlled && (target.phaseUntil || 0) > now) return false;
   if (source && source.playerControlled && (source.phaseUntil || 0) > now) return false;
 
-  // Forme d'ombre (Voleur) : chance d'esquiver entièrement l'attaque.
-  if (target.playerControlled && (target.dodgeUntil || 0) > now && Math.random() < (target.dodgeChance || 0)) {
-    spawnFloatingText(target.x + (Math.random() - 0.5) * 24, target.y - target.size / 2 - 34, 'Esquive', '255, 255, 255');
-    return false;
+  // Esquive : 1% par tranche de 10 d'Agilité (passif, demande utilisateur explicite) + le bonus
+  // temporaire de Forme d'ombre (Voleur) tant qu'elle est active -- les deux s'additionnent.
+  if (target.playerControlled) {
+    const baseDodge = Math.floor(((target.stats && target.stats.agilite) || 0) / 10) * 0.01;
+    const bonusDodge = (target.dodgeUntil || 0) > now ? (target.dodgeChance || 0) : 0;
+    if (Math.random() < baseDodge + bonusDodge) {
+      spawnFloatingText(target.x + (Math.random() - 0.5) * 24, target.y - target.size / 2 - 34, 'Esquive', '255, 255, 255');
+      return false;
+    }
   }
 
   if (!target.playerControlled && combatPhase !== 'active') combatPhase = 'active';
@@ -497,7 +508,10 @@ function dealDamage(target, amount, rgb, source) {
     remaining -= absorbed;
   }
   target.hp = Math.max(0, target.hp - remaining);
-  spawnFloatingText(target.x + (Math.random() - 0.5) * 24, target.y - target.size / 2 - 34, `-${amount}`, rgb);
+  spawnFloatingText(
+    target.x + (Math.random() - 0.5) * 24, target.y - target.size / 2 - 34,
+    `-${amount}${isCrit ? '!' : ''}`, isCrit ? '255, 213, 79' : rgb
+  );
   // Sert à l'IA pour savoir si elle vient de se faire attaquer (voir AUTO_DEFENSIVE_SKILLS).
   if (target.playerControlled) target.lastDamageTakenAt = now;
 
@@ -507,6 +521,21 @@ function dealDamage(target, amount, rgb, source) {
     addThreat(target, amount, now); // le joueur subit des dégâts de l'ennemi
   }
   return true;
+}
+
+// Coup critique : 1% de chance par tranche de 10 d'Agilité (demande utilisateur explicite),
+// double les dégâts. Calcule aussi les dégâts d'une attaque/compétence à partir d'un % d'une
+// caractéristique (Force ou Intelligence) -- base commune à l'attaque de base et aux sorts.
+function rollCrit(character) {
+  const agi = (character.stats && character.stats.agilite) || 0;
+  const chance = Math.floor(agi / 10) * 0.01;
+  return Math.random() < chance;
+}
+
+function computeStatDamage(character, statKey, percent) {
+  const base = Math.round(((character.stats && character.stats[statKey]) || 0) * percent);
+  const crit = rollCrit(character);
+  return { amount: crit ? base * 2 : base, crit };
 }
 
 // Soigner génère de la menace pour le soigneur, au même titre que les dégâts (demande
@@ -569,12 +598,12 @@ const SKILLS = {
   bouleDeFeu: {
     id: 'bouleDeFeu', name: 'Boule de feu', shortLabel: 'Boule\nde feu', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character, target) {
-      const damage = 10 + Math.round(character.stats.intelligence * 0.8);
+      const { amount, crit } = computeStatDamage(character, 'intelligence', 0.9);
       // La brûlure ne se pose que si le coup a réellement porté (pas esquivé/déphasage).
-      if (dealDamage(target, damage, '255, 112, 67', character)) {
+      if (dealDamage(target, amount, '255, 112, 67', character, crit)) {
         applyDot(target, {
           kind: 'burn', ticksLeft: 3, tickIntervalMs: 1000, rgb: '255, 87, 34', source: character,
-          damagePerTick: 3 + Math.round(character.stats.intelligence * 0.2),
+          damagePerTick: Math.round(character.stats.intelligence * 0.15),
         });
       }
     },
@@ -582,10 +611,10 @@ const SKILLS = {
   traitDeGivre: {
     id: 'traitDeGivre', name: 'Trait de givre', shortLabel: 'Trait de\ngivre', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character, target) {
-      const damage = 8 + Math.round(character.stats.intelligence * 0.6);
+      const { amount, crit } = computeStatDamage(character, 'intelligence', 0.7);
       // Ralentit les déplacements de la cible (si le coup porte) -- sans effet visible sur le
       // boss actuel, qui ne se déplace jamais, mais prêt pour un futur ennemi mobile.
-      if (dealDamage(target, damage, '79, 195, 247', character)) {
+      if (dealDamage(target, amount, '79, 195, 247', character, crit)) {
         target.slowMultiplier = 0.5;
         target.slowUntil = performance.now() + 3000;
       }
@@ -594,19 +623,19 @@ const SKILLS = {
   coupSournois: {
     id: 'coupSournois', name: 'Coup sournois', shortLabel: 'Coup\nsournois', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character, target) {
-      const base = 8 + Math.round(character.stats.agilite * 0.8);
-      const damage = isBehind(character, target) ? base * 2 : base;
-      dealDamage(target, damage, '186, 104, 200', character);
+      const { amount, crit } = computeStatDamage(character, 'force', 1.2);
+      const damage = isBehind(character, target) ? amount * 2 : amount;
+      dealDamage(target, damage, '186, 104, 200', character, crit);
     },
   },
   surinage: {
     id: 'surinage', name: 'Surinage', shortLabel: 'Surinage', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
     cast(character, target) {
-      const damage = 6 + Math.round(character.stats.agilite * 0.5);
-      if (dealDamage(target, damage, '229, 57, 53', character)) {
+      const { amount, crit } = computeStatDamage(character, 'force', 0.7);
+      if (dealDamage(target, amount, '229, 57, 53', character, crit)) {
         applyDot(target, {
           kind: 'bleed', ticksLeft: 4, tickIntervalMs: 800, rgb: '229, 57, 53', source: character,
-          damagePerTick: 2 + Math.round(character.stats.agilite * 0.15),
+          damagePerTick: Math.round(character.stats.force * 0.12),
         });
       }
     },
