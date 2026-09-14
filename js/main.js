@@ -1812,6 +1812,33 @@ function clearLongPress() {
   }
 }
 
+// ------------------------------------------------------------------
+// Défilement vertical (onglet Personnage, seule scène dont le contenu peut dépasser l'écran --
+// 11 personnages, plus le détail déplié) : le jeu n'a pas de défilement natif ailleurs, donc les
+// cases (registerHitRect) ne peuvent plus se déclencher directement au pointerdown comme avant --
+// sinon un simple geste de défilement démarré sur une case l'ouvrait/fermait au lieu de faire
+// défiler (bug corrigé ici, demande utilisateur explicite). Elles ne se déclenchent donc plus
+// qu'au relâchement, et seulement si le déplacement total est resté sous CLICK_THRESHOLD.
+// ------------------------------------------------------------------
+const SCROLLABLE_SCENES = new Set(['personnage']);
+let characterSceneScrollY = 0;
+let characterSceneContentHeight = 0; // mesurée à chaque image par drawCharacterScene
+
+function characterSceneMaxScroll() {
+  const viewportHeight = canvas.height - (TOP_BANNER_HEIGHT + 16);
+  return Math.max(0, characterSceneContentHeight - viewportHeight);
+}
+
+function clampCharacterScroll(value) {
+  return Math.max(0, Math.min(characterSceneMaxScroll(), value));
+}
+
+let pendingHit = null; // case en attente de relâchement (voir plus haut), annulée si ça devient un défilement
+let pendingHitStartX = 0, pendingHitStartY = 0;
+let scrollDragActive = false;
+let scrollDragStartY = 0;
+let scrollDragStartOffset = 0;
+
 function getPointerPos(event) {
   const rect = canvas.getBoundingClientRect();
   return { x: event.clientX - rect.left, y: event.clientY - rect.top };
@@ -1867,6 +1894,8 @@ function clearPointerState() {
   dragTargetEnemy = null;
   clearLongPress();
   hoveredSkillsCharacter = null;
+  pendingHit = null;
+  scrollDragActive = false;
 }
 
 canvas.addEventListener('pointerdown', (event) => {
@@ -1881,12 +1910,25 @@ canvas.addEventListener('pointerdown', (event) => {
     return;
   }
 
+  // Scène à défilement (voir SCROLLABLE_SCENES) : tout appui y démarre un suivi de défilement
+  // potentiel, même s'il tombe aussi sur une case (voir pendingHit ci-dessous) -- c'est le
+  // pointermove qui décidera si le geste est un défilement (déplacement franc) ou un tap.
+  if (SCROLLABLE_SCENES.has(currentScene)) {
+    scrollDragActive = true;
+    scrollDragStartY = y;
+    scrollDragStartOffset = characterSceneScrollY;
+  }
+
   // Zones interactives de la scène affichée (jauges de compétence du joueur, cases de sort du
-  // bandeau de sélection en combat...) : prioritaires sur la sélection/déplacement ci-dessous,
-  // sinon cliquer une case de sort en combat serait interprété comme un clic dans le vide.
+  // bandeau de sélection en combat, ligne de personnage à déplier...) : prioritaires sur la
+  // sélection/déplacement de combat ci-dessous. Ne se déclenchent qu'au relâchement (voir
+  // pointerup) -- sinon un défilement démarré dessus serait interprété comme un tap (bug corrigé,
+  // demande utilisateur explicite : impossible de défiler l'onglet Personnage avant ce correctif).
   const hit = hitTestInteractiveRects(x, y);
   if (hit) {
-    hit.onClick();
+    pendingHit = hit;
+    pendingHitStartX = x;
+    pendingHitStartY = y;
     return;
   }
 
@@ -1919,6 +1961,24 @@ canvas.addEventListener('pointerdown', (event) => {
   dragPreviewPath = [];
   dragTargetEnemy = null;
   canvas.setPointerCapture(pointerId);
+});
+
+// Défilement (voir SCROLLABLE_SCENES) + annulation du tap/appui long en attente dès que le geste
+// s'avère être un vrai déplacement plutôt qu'un tap sur place (voir pointerdown/pointerup).
+canvas.addEventListener('pointermove', (event) => {
+  if (!scrollDragActive && !pendingHit && !longPressTimer) return;
+  const { x, y } = getPointerPos(event);
+
+  if (scrollDragActive) {
+    const delta = y - scrollDragStartY;
+    if (Math.abs(delta) > CLICK_THRESHOLD) {
+      characterSceneScrollY = clampCharacterScroll(scrollDragStartOffset - delta);
+      // Un vrai défilement n'est plus un tap ni un appui long -- annule les deux.
+      pendingHit = null;
+      clearLongPress();
+      hoveredSkillsCharacter = null;
+    }
+  }
 });
 
 canvas.addEventListener('pointermove', (event) => {
@@ -1956,6 +2016,19 @@ canvas.addEventListener('pointerup', (event) => {
   // survolable (voir le retour anticipé dans pointerdown).
   clearLongPress();
   hoveredSkillsCharacter = null;
+  scrollDragActive = false;
+
+  // Case en attente (voir pointerdown/hitTestInteractiveRects) : ne se déclenche que si le
+  // relâchement reste proche du point d'appui -- un vrai déplacement (défilement) l'a déjà
+  // annulée entre-temps (voir le pointermove de défilement), donc pendingHit serait déjà null.
+  if (pendingHit) {
+    const { x: upX, y: upY } = getPointerPos(event);
+    const hitDist = Math.hypot(upX - pendingHitStartX, upY - pendingHitStartY);
+    const action = pendingHit;
+    pendingHit = null;
+    if (hitDist <= CLICK_THRESHOLD) action.onClick();
+    return;
+  }
 
   if (!pointerActive) return;
   const { x, y } = getPointerPos(event);
@@ -2883,7 +2956,16 @@ function drawCharacterScene() {
   const cardX = LIST_PADDING_X;
   const cardWidth = canvas.width - LIST_PADDING_X * 2;
   const rowHeight = 54;
-  let y = TOP_BANNER_HEIGHT + 16;
+  const viewTop = TOP_BANNER_HEIGHT + 16;
+  let y = viewTop - characterSceneScrollY;
+
+  // Le contenu (11 personnages + détail déplié éventuel) peut largement dépasser l'écran -- on le
+  // découpe au bandeau du haut pour qu'un personnage partiellement scrollé ne s'affiche pas
+  // par-dessus (voir characterSceneScrollY, mis à jour par le pointermove de défilement).
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, TOP_BANNER_HEIGHT, canvas.width, canvas.height - TOP_BANNER_HEIGHT);
+  ctx.clip();
 
   for (const character of roster) {
     const slot = activePartyIndices.indexOf(character.rosterId);
@@ -2926,6 +3008,22 @@ function drawCharacterScene() {
       const detailHeight = drawRosterCharacterDetail(character, cardX + CARD_PADDING, y, cardWidth - CARD_PADDING * 2);
       y += detailHeight + 10;
     }
+  }
+
+  ctx.restore();
+
+  characterSceneContentHeight = y + characterSceneScrollY - viewTop;
+  characterSceneScrollY = clampCharacterScroll(characterSceneScrollY);
+
+  // Repère visuel minimal indiquant qu'il y a plus à voir en défilant (aucun autre indice sinon,
+  // vu qu'il n'y a pas de défilement ailleurs dans le jeu).
+  const maxScroll = characterSceneMaxScroll();
+  if (maxScroll > 0) {
+    const viewportHeight = canvas.height - viewTop;
+    const thumbHeight = Math.max(24, (viewportHeight / characterSceneContentHeight) * viewportHeight);
+    const thumbY = viewTop + (characterSceneScrollY / maxScroll) * (viewportHeight - thumbHeight);
+    ctx.fillStyle = '#ffffff33';
+    ctx.fillRect(canvas.width - 4, thumbY, 3, thumbHeight);
   }
 }
 
