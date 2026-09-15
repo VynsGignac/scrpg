@@ -744,6 +744,19 @@ function computeStatDamage(character, statKey, percent) {
   return { amount: crit ? base * 2 : base, crit };
 }
 
+// Comme computeStatDamage, mais combine DEUX caractéristiques avant d'appliquer le multiplicateur
+// de dégâts sortants et le critique (demande utilisateur explicite : les dégâts du Voleur doivent
+// se baser en partie sur l'Agilité, en plus de la Force). Les % de chaque sort sont calibrés pour
+// donner un total proche de l'ancienne version 100% Force, aux stats de base du Voleur (12 Force,
+// 20 Agilité) -- l'Agilité y pèse pour environ 40% du total plutôt que d'être un pur bonus.
+function computeHybridStatDamage(character, primaryKey, primaryPercent, secondaryKey, secondaryPercent) {
+  const primary = (character.stats && character.stats[primaryKey]) || 0;
+  const secondary = (character.stats && character.stats[secondaryKey]) || 0;
+  const base = Math.round((primary * primaryPercent + secondary * secondaryPercent) * damageOutputMultiplier(character, performance.now()));
+  const crit = rollCrit(character);
+  return { amount: crit ? base * 2 : base, crit };
+}
+
 // Soigner génère de la menace pour le soigneur, au même titre que les dégâts (demande
 // utilisateur explicite) -- y compris en se soignant soi-même (source === target).
 function healCharacter(target, amount, source) {
@@ -1030,9 +1043,11 @@ const SKILLS = {
   },
   lumiereDivine: {
     id: 'lumiereDivine', name: 'Lumière divine', shortLabel: 'Lumière\ndivine', targeting: 'ally', cooldownMs: 8000,
-    description: "Soigne l'allié le plus faible (10 + 40% Savoir).",
+    description: "Soigne l'allié le plus faible (10 + 28% Savoir + 12% Intelligence).",
     cast(character) {
-      const heal = 10 + Math.round(character.stats.savoir * 0.4);
+      // Soin hybride Savoir + Intelligence (demande utilisateur explicite) : ~70/30, total proche
+      // de l'ancienne version 100% Savoir pour un soigneur typique.
+      const heal = 10 + Math.round(character.stats.savoir * 0.28 + character.stats.intelligence * 0.12);
       healCharacter(lowestHpAlly() || character, heal, character);
     },
   },
@@ -1042,12 +1057,15 @@ const SKILLS = {
   // doit devenir le meilleur DPS mono-cible du jeu quand son positionnement est bon, pour que
   // jouer activement le placement (ou les alternatives qui l'imitent : Forme d'ombre, cible déjà
   // en saignement) soit un vrai choix payant plutôt qu'un bonus cosmétique.
+  // Dégâts hybrides Force + Agilité (demande utilisateur explicite, voir computeHybridStatDamage) :
+  // les % sont calibrés pour retomber sur un total proche de l'ancienne version 100% Force aux
+  // stats de base du Voleur (12 Force, 20 Agilité), l'Agilité pesant pour ~40% du total.
   coupSournois: {
     id: 'coupSournois', name: 'Coup sournois', shortLabel: 'Coup\nsournois', targeting: 'enemy', cooldownMs: 6000,
-    description: "120% Force, x2.5 dans le dos (ou via Forme d'ombre / cible en saignement).",
+    description: "72% Force + 29% Agilité, x2.5 dans le dos (ou via Forme d'ombre / cible en saignement).",
     cast(character, target) {
       const now = performance.now();
-      const { amount, crit } = computeStatDamage(character, 'force', 1.2);
+      const { amount, crit } = computeHybridStatDamage(character, 'force', 0.72, 'agilite', 0.288);
       // Dans le dos, ou garanti par Forme d'ombre (consommé une seule fois), ou si la cible
       // saigne déjà (Surinage/Fauchage) : dégâts x2.5.
       const guaranteed = (character.guaranteedBackstabUntil || 0) > now;
@@ -1059,15 +1077,16 @@ const SKILLS = {
   },
   fauchage: {
     id: 'fauchage', name: 'Fauchage', shortLabel: 'Fauchage', targeting: 'enemy', cooldownMs: 10000,
-    description: '60% Force à tous les ennemis + saignement (3 ticks).',
+    description: '36% Force + 14% Agilité à tous les ennemis + saignement (3 ticks).',
     cast(character) {
       for (const enemy of enemies) {
         if (enemy.hp <= 0) continue;
-        const { amount, crit } = computeStatDamage(character, 'force', 0.6);
+        const { amount, crit } = computeHybridStatDamage(character, 'force', 0.36, 'agilite', 0.144);
         if (dealDamage(enemy, amount, '186, 104, 200', character, crit, 'Fauchage')) {
           applyDot(enemy, {
             kind: 'bleed', ticksLeft: 3, tickIntervalMs: 800, rgb: '229, 57, 53', source: character,
-            skillName: 'Fauchage (saignement)', damagePerTick: Math.round(character.stats.force * 0.1),
+            skillName: 'Fauchage (saignement)',
+            damagePerTick: Math.round(character.stats.force * 0.06 + character.stats.agilite * 0.024),
           });
         }
       }
@@ -1086,13 +1105,14 @@ const SKILLS = {
   },
   surinage: {
     id: 'surinage', name: 'Surinage', shortLabel: 'Surinage', targeting: 'enemy', cooldownMs: 8000,
-    description: '70% Force + saignement plus long (4 ticks).',
+    description: '42% Force + 17% Agilité + saignement plus long (4 ticks).',
     cast(character, target) {
-      const { amount, crit } = computeStatDamage(character, 'force', 0.7);
+      const { amount, crit } = computeHybridStatDamage(character, 'force', 0.42, 'agilite', 0.168);
       if (dealDamage(target, amount, '229, 57, 53', character, crit, 'Surinage')) {
         applyDot(target, {
           kind: 'bleed', ticksLeft: 4, tickIntervalMs: 800, rgb: '229, 57, 53', source: character,
-          skillName: 'Surinage (saignement)', damagePerTick: Math.round(character.stats.force * 0.12),
+          skillName: 'Surinage (saignement)',
+          damagePerTick: Math.round(character.stats.force * 0.072 + character.stats.agilite * 0.0288),
         });
       }
     },
@@ -1290,6 +1310,8 @@ const SKILLS = {
       }
     },
   },
+  // Soins hybrides Savoir + Intelligence (demande utilisateur explicite, ~70/30 -- voir Lumière
+  // divine plus haut pour le détail du calibrage).
   epinesEmpoisonnees: {
     id: 'epinesEmpoisonnees', name: 'Épines empoisonnées', shortLabel: 'Épines\nempois.', targeting: 'enemy', cooldownMs: 10000,
     description: "Consomme le poison accumulé sur les ennemis pour soigner l'allié le plus faible.",
@@ -1302,7 +1324,7 @@ const SKILLS = {
         enemy.poisonStacks = 0;
       }
       if (stacksConsumed > 0) {
-        const heal = stacksConsumed * 2 * Math.round(character.stats.savoir * 0.2);
+        const heal = stacksConsumed * 2 * Math.round(character.stats.savoir * 0.14 + character.stats.intelligence * 0.06);
         healCharacter(lowestHpAlly() || character, heal, character);
       }
     },
@@ -1316,14 +1338,14 @@ const SKILLS = {
       target.shieldHp = shield;
       target.shieldMax = shield;
       target.shieldExpiresAt = performance.now() + 6000;
-      healCharacter(target, Math.round(character.stats.savoir * 0.3), character);
+      healCharacter(target, Math.round(character.stats.savoir * 0.21 + character.stats.intelligence * 0.09), character);
     },
   },
   chantDeLaForet: {
     id: 'chantDeLaForet', name: 'Chant de la forêt', shortLabel: 'Chant de\nla forêt', targeting: 'ally', cooldownMs: 14000,
     description: 'Soigne tout le groupe.',
     cast(character) {
-      const heal = Math.round(character.stats.savoir * 0.4);
+      const heal = Math.round(character.stats.savoir * 0.28 + character.stats.intelligence * 0.12);
       for (const c of characters) {
         if (c.playerControlled && c.hp > 0) healCharacter(c, heal, character);
       }
@@ -1395,7 +1417,9 @@ const SKILLS = {
     cast(character) {
       const target = lowestHpAlly() || character;
       const recentlyHit = performance.now() - (target.lastDamageTakenAt || 0) <= 3000;
-      const heal = Math.round(character.stats.savoir * (recentlyHit ? 1.1 : 0.9));
+      // Soin hybride Savoir + Intelligence (demande utilisateur explicite, ~70/30).
+      const power = character.stats.savoir * 0.7 + character.stats.intelligence * 0.3;
+      const heal = Math.round(power * (recentlyHit ? 1.1 : 0.9));
       healCharacter(target, heal, character);
       // Pose un stack de Grâce (jusqu'à 5) consommé par le prochain Mot de douleur -- voir plus haut.
       character.priestGraceStacks = Math.min(5, (character.priestGraceStacks || 0) + 1);
@@ -1510,7 +1534,8 @@ const SKILLS = {
       character.shieldHp = shield;
       character.shieldMax = shield;
       character.shieldExpiresAt = performance.now() + 6000;
-      healCharacter(character, Math.round(character.stats.savoir * 0.2), character);
+      // Soin hybride Savoir + Intelligence (demande utilisateur explicite, ~70/30).
+      healCharacter(character, Math.round(character.stats.savoir * 0.14 + character.stats.intelligence * 0.06), character);
     },
   },
   totem: {
@@ -1525,7 +1550,8 @@ const SKILLS = {
       // soigneur du roster, demande utilisateur explicite) : le "gros boost" est presque
       // entièrement porté par les dégâts (+20%), pas par le soin.
       const now = performance.now();
-      const heal = Math.round(character.stats.savoir * 0.15);
+      // Soin hybride Savoir + Intelligence (demande utilisateur explicite, ~70/30).
+      const heal = Math.round(character.stats.savoir * 0.105 + character.stats.intelligence * 0.045);
       for (const c of characters) {
         if (!c.playerControlled || c.hp <= 0) continue;
         if (Math.hypot(c.x - character.x, c.y - character.y) > ZONE_RADIUS) continue;
@@ -1614,9 +1640,11 @@ function isInRangeOf(character, target) {
 }
 
 // Coût en mana : le même pour tous les sorts (demande utilisateur explicite) -- contrairement aux
-// cooldowns, restés uniques par sort ci-dessus (voir leur cooldownMs respectif). Régénération
+// cooldowns, restés uniques par sort ci-dessus (voir leur cooldownMs respectif). Abaissé de 20 à 10
+// (demande utilisateur explicite) : avec des cooldowns bien plus courts qu'avant (3-20s au lieu de
+// 20s fixe), le mana serait sinon devenu le vrai facteur limitant pour tout le monde. Régénération
 // passive plus bas (voir updateManaRegen).
-const SKILL_MANA_COST = 20;
+const SKILL_MANA_COST = 10;
 const MANA_REGEN_PER_SEC = 2; // socle commun
 const MANA_REGEN_PER_SAVOIR = 0.3; // + bonus selon le Savoir (les soigneurs récupèrent plus vite)
 
