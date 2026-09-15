@@ -1959,24 +1959,41 @@ function clearLongPress() {
 }
 
 // ------------------------------------------------------------------
-// Défilement vertical (onglet Personnage, seule scène dont le contenu peut dépasser l'écran --
-// 11 personnages, plus le détail déplié) : le jeu n'a pas de défilement natif ailleurs, donc les
+// Défilement vertical générique, par scène (demande utilisateur explicite : Personnage d'abord,
+// puis le même problème sur Guilde -- 12 personnages ne tiennent pas plus dans l'onglet Guilde que
+// dans Personnage, voir drawGuildeRosterTab). Le jeu n'a pas de défilement natif ailleurs, donc les
 // cases (registerHitRect) ne peuvent plus se déclencher directement au pointerdown comme avant --
 // sinon un simple geste de défilement démarré sur une case l'ouvrait/fermait au lieu de faire
-// défiler (bug corrigé ici, demande utilisateur explicite). Elles ne se déclenchent donc plus
-// qu'au relâchement, et seulement si le déplacement total est resté sous CLICK_THRESHOLD.
+// défiler. Elles ne se déclenchent donc plus qu'au relâchement, et seulement si le déplacement
+// total est resté sous CLICK_THRESHOLD. Chaque scène listée ici a son propre décalage/hauteur
+// (measurée à chaque image par la fonction de dessin de cette scène), pour ne pas se marcher
+// dessus en changeant d'onglet.
 // ------------------------------------------------------------------
-const SCROLLABLE_SCENES = new Set(['personnage']);
-let characterSceneScrollY = 0;
-let characterSceneContentHeight = 0; // mesurée à chaque image par drawCharacterScene
+const SCROLLABLE_SCENES = new Set(['personnage', 'guilde', 'joueur']);
+const sceneScrollY = {}; // { [scene]: décalage actuel }
+const sceneContentHeight = {}; // { [scene]: hauteur mesurée à la dernière image }
 
-function characterSceneMaxScroll() {
-  const viewportHeight = canvas.height - (TOP_BANNER_HEIGHT + 16);
-  return Math.max(0, characterSceneContentHeight - viewportHeight);
+function getSceneScrollY(scene) {
+  return sceneScrollY[scene] || 0;
 }
 
-function clampCharacterScroll(value) {
-  return Math.max(0, Math.min(characterSceneMaxScroll(), value));
+function sceneMaxScroll(scene) {
+  const viewportHeight = canvas.height - (TOP_BANNER_HEIGHT + 16);
+  return Math.max(0, (sceneContentHeight[scene] || 0) - viewportHeight);
+}
+
+function clampSceneScroll(scene, value) {
+  return Math.max(0, Math.min(sceneMaxScroll(scene), value));
+}
+
+// Appelé par la fonction de dessin d'une scène défilable une fois son contenu entièrement mesuré
+// (hauteur totale non tronquée) : borne le décalage courant à ce qui est maintenant valide (utile
+// si le contenu vient de rétrécir, ex. une ligne repliée) et renvoie le décalage à utiliser pour
+// CETTE image.
+function setSceneContentHeight(scene, height) {
+  sceneContentHeight[scene] = height;
+  sceneScrollY[scene] = clampSceneScroll(scene, sceneScrollY[scene] || 0);
+  return sceneScrollY[scene];
 }
 
 let pendingHit = null; // case en attente de relâchement (voir plus haut), annulée si ça devient un défilement
@@ -1984,6 +2001,7 @@ let pendingHitStartX = 0, pendingHitStartY = 0;
 let scrollDragActive = false;
 let scrollDragStartY = 0;
 let scrollDragStartOffset = 0;
+let scrollDragScene = null; // scène concernée par le défilement en cours (voir pointerdown)
 
 function getPointerPos(event) {
   const rect = canvas.getBoundingClientRect();
@@ -2061,8 +2079,9 @@ canvas.addEventListener('pointerdown', (event) => {
   // pointermove qui décidera si le geste est un défilement (déplacement franc) ou un tap.
   if (SCROLLABLE_SCENES.has(currentScene)) {
     scrollDragActive = true;
+    scrollDragScene = currentScene;
     scrollDragStartY = y;
-    scrollDragStartOffset = characterSceneScrollY;
+    scrollDragStartOffset = getSceneScrollY(currentScene);
   }
 
   // Zones interactives de la scène affichée (jauges de compétence du joueur, cases de sort du
@@ -2118,7 +2137,7 @@ canvas.addEventListener('pointermove', (event) => {
   if (scrollDragActive) {
     const delta = y - scrollDragStartY;
     if (Math.abs(delta) > CLICK_THRESHOLD) {
-      characterSceneScrollY = clampCharacterScroll(scrollDragStartOffset - delta);
+      sceneScrollY[scrollDragScene] = clampSceneScroll(scrollDragScene, scrollDragStartOffset - delta);
       // Un vrai défilement n'est plus un tap ni un appui long -- annule les deux.
       pendingHit = null;
       clearLongPress();
@@ -2708,7 +2727,7 @@ function drawSelectionBanner(character) {
 
   rowY += lineHeight + barHeight + 6;
   ctx.fillStyle = '#ffffff';
-  ctx.fillText(`Mana ${character.mana}/${character.manaMax}`, colX, rowY);
+  ctx.fillText(`Mana ${Math.floor(character.mana)}/${character.manaMax}`, colX, rowY);
   ctx.fillStyle = '#122236';
   ctx.fillRect(colX, rowY + 8, barWidth, barHeight);
   ctx.fillStyle = '#42a5f5';
@@ -2939,7 +2958,16 @@ function drawPlayerScene() {
   const cardX = LIST_PADDING_X;
   const cardWidth = canvas.width - LIST_PADDING_X * 2;
   const cardHeight = 158;
-  let y = TOP_BANNER_HEIGHT + 16;
+  const viewTop = TOP_BANNER_HEIGHT;
+  let y = viewTop + 16 - getSceneScrollY('joueur');
+
+  // Toujours PARTY_SIZE (4) cartes ici, contrairement au roster qui grandit -- tient sur la
+  // plupart des écrans, mais pas forcément tous (demande utilisateur explicite : anticiper le même
+  // problème de défilement que Personnage/Guilde avant qu'il ne se pose vraiment).
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, viewTop, canvas.width, canvas.height - viewTop);
+  ctx.clip();
 
   for (const player of players) {
     const character = characters.find((c) => c.playerControlled && c.index === player.index);
@@ -2985,6 +3013,11 @@ function drawPlayerScene() {
 
     y += cardHeight + CARD_GAP;
   }
+
+  ctx.restore();
+
+  setSceneContentHeight('joueur', y + getSceneScrollY('joueur') - viewTop);
+  drawSceneScrollbar('joueur', viewTop);
 }
 
 // Scène "Personnage" : la liste des personnages loués (classe, niveau, caractéristiques). Simple
@@ -3174,11 +3207,11 @@ function drawCharacterScene() {
   const cardWidth = canvas.width - LIST_PADDING_X * 2;
   const rowHeight = 54;
   const viewTop = TOP_BANNER_HEIGHT + 16;
-  let y = viewTop - characterSceneScrollY;
+  let y = viewTop - getSceneScrollY('personnage');
 
-  // Le contenu (11 personnages + détail déplié éventuel) peut largement dépasser l'écran -- on le
+  // Le contenu (12 personnages + détail déplié éventuel) peut largement dépasser l'écran -- on le
   // découpe au bandeau du haut pour qu'un personnage partiellement scrollé ne s'affiche pas
-  // par-dessus (voir characterSceneScrollY, mis à jour par le pointermove de défilement).
+  // par-dessus (voir sceneScrollY, mis à jour par le pointermove de défilement).
   ctx.save();
   ctx.beginPath();
   ctx.rect(0, TOP_BANNER_HEIGHT, canvas.width, canvas.height - TOP_BANNER_HEIGHT);
@@ -3229,19 +3262,22 @@ function drawCharacterScene() {
 
   ctx.restore();
 
-  characterSceneContentHeight = y + characterSceneScrollY - viewTop;
-  characterSceneScrollY = clampCharacterScroll(characterSceneScrollY);
+  setSceneContentHeight('personnage', y + getSceneScrollY('personnage') - viewTop);
+  drawSceneScrollbar('personnage', viewTop);
+}
 
-  // Repère visuel minimal indiquant qu'il y a plus à voir en défilant (aucun autre indice sinon,
-  // vu qu'il n'y a pas de défilement ailleurs dans le jeu).
-  const maxScroll = characterSceneMaxScroll();
-  if (maxScroll > 0) {
-    const viewportHeight = canvas.height - viewTop;
-    const thumbHeight = Math.max(24, (viewportHeight / characterSceneContentHeight) * viewportHeight);
-    const thumbY = viewTop + (characterSceneScrollY / maxScroll) * (viewportHeight - thumbHeight);
-    ctx.fillStyle = '#ffffff33';
-    ctx.fillRect(canvas.width - 4, thumbY, 3, thumbHeight);
-  }
+// Repère visuel minimal indiquant qu'une scène à défilement (voir SCROLLABLE_SCENES) a plus de
+// contenu à voir en glissant -- aucun autre indice sinon, vu qu'il n'y a pas de défilement ailleurs
+// dans le jeu. Partagé entre l'onglet Personnage et l'onglet Guilde.
+function drawSceneScrollbar(scene, viewTop) {
+  const maxScroll = sceneMaxScroll(scene);
+  if (maxScroll <= 0) return;
+  const viewportHeight = canvas.height - viewTop;
+  const contentHeight = sceneContentHeight[scene] || 1;
+  const thumbHeight = Math.max(24, (viewportHeight / contentHeight) * viewportHeight);
+  const thumbY = viewTop + (getSceneScrollY(scene) / maxScroll) * (viewportHeight - thumbHeight);
+  ctx.fillStyle = '#ffffff33';
+  ctx.fillRect(canvas.width - 4, thumbY, 3, thumbHeight);
 }
 
 // ------------------------------------------------------------
@@ -3558,7 +3594,16 @@ function drawGuildeSubTabs() {
 function drawGuildeRosterTab() {
   const cardX = LIST_PADDING_X;
   const cardWidth = canvas.width - LIST_PADDING_X * 2;
-  let y = TOP_BANNER_HEIGHT + GUILDE_SUB_TAB_HEIGHT + 16;
+  const viewTop = TOP_BANNER_HEIGHT + GUILDE_SUB_TAB_HEIGHT;
+  let y = viewTop + 16 - getSceneScrollY('guilde');
+
+  // Comme l'onglet Personnage (même bug, même correctif, demande utilisateur explicite) : le
+  // contenu (bouton d'entraînement + 12 personnages) peut dépasser l'écran, découpé sous les
+  // sous-onglets pour qu'une ligne partiellement scrollée ne s'affiche pas par-dessus.
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, viewTop, canvas.width, canvas.height - viewTop);
+  ctx.clip();
 
   ctx.textAlign = 'left';
   ctx.textBaseline = 'alphabetic';
@@ -3618,6 +3663,11 @@ function drawGuildeRosterTab() {
 
     y += rowHeight + 6;
   }
+
+  ctx.restore();
+
+  setSceneContentHeight('guilde', y + getSceneScrollY('guilde') - viewTop);
+  drawSceneScrollbar('guilde', viewTop);
 }
 
 // Sous-onglets pas encore implémentés : simple espace réservé, comme les scènes principales
