@@ -3602,10 +3602,10 @@ function toggleGuildMembership(character) {
   }
 }
 
-// La scène "Guilde" a 3 sous-onglets (demande utilisateur explicite) : la sélection du roster
-// est pleinement fonctionnelle ; "Gestion des comptes" et "Stratégie d'équipe" sont pour
-// l'instant de simples espaces réservés, comme l'ont été les scènes principales avant d'avoir
-// chacune leur tour un vrai contenu.
+// La scène "Guilde" a 3 sous-onglets (demande utilisateur explicite) : sélection du roster et
+// gestion des comptes sont pleinement fonctionnelles ; "Stratégie d'équipe" reste pour l'instant
+// un simple espace réservé, comme l'ont été les scènes principales avant d'avoir chacune leur tour
+// un vrai contenu.
 const GUILDE_SUB_TABS = [
   { key: 'roster', label: 'Sélection roster' },
   { key: 'comptes', label: 'Gestion des comptes' },
@@ -3613,6 +3613,37 @@ const GUILDE_SUB_TABS = [
 ];
 let guildeSubTab = 'roster';
 const GUILDE_SUB_TAB_HEIGHT = 40;
+
+// Sous-onglet "Gestion des comptes" : associe librement un joueur (parmi les 4) à un personnage
+// du roster (parmi les 12) -- indépendant de la composition envoyée en donjon (voir "Sélection
+// roster"), juste un registre de qui joue quel personnage (demande utilisateur explicite). Lignes
+// ajoutées/supprimées librement, sans limite de nombre (demande utilisateur explicite : "on peut
+// en avoir 0 ou 12"). Chaque menu déroulant ne propose que les joueurs/personnages pas déjà pris
+// sur une autre ligne -- empêche les doublons directement dans la liste plutôt que d'échanger
+// automatiquement (demande utilisateur explicite), "Aucun" toujours disponible pour vider une
+// colonne.
+let accountRows = [];
+let nextAccountRowId = 1;
+let openAccountDropdown = null; // { rowId, column: 'player' | 'character' }, ou null si rien n'est ouvert
+
+function addAccountRow() {
+  accountRows.push({ id: nextAccountRowId++, playerIndex: null, characterId: null });
+}
+
+function removeAccountRow(rowId) {
+  accountRows = accountRows.filter((row) => row.id !== rowId);
+  if (openAccountDropdown && openAccountDropdown.rowId === rowId) openAccountDropdown = null;
+}
+
+function availablePlayersForRow(rowId) {
+  const usedElsewhere = new Set(accountRows.filter((row) => row.id !== rowId && row.playerIndex != null).map((row) => row.playerIndex));
+  return players.filter((p) => !usedElsewhere.has(p.index));
+}
+
+function availableCharactersForRow(rowId) {
+  const usedElsewhere = new Set(accountRows.filter((row) => row.id !== rowId && row.characterId != null).map((row) => row.characterId));
+  return roster.filter((c) => !usedElsewhere.has(c.rosterId));
+}
 
 function guildeSubTabRects() {
   const tabWidth = canvas.width / GUILDE_SUB_TABS.length;
@@ -3736,6 +3767,186 @@ function drawGuildeRosterTab() {
   drawSceneScrollbar('guilde', viewTop);
 }
 
+// Un champ "menu déroulant" du sous-onglet Gestion des comptes : affiche la sélection actuelle (ou
+// un texte d'invite grisé si vide) avec un petit ▾, et ouvre openAccountDropdown au clic.
+function drawAccountDropdownBox(x, y, width, height, label, placeholder, onClick) {
+  ctx.fillStyle = '#ffffff14';
+  ctx.fillRect(x, y, width, height);
+  ctx.strokeStyle = '#ffffff33';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x + 0.5, y + 0.5, width - 1, height - 1);
+
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.font = label ? 'bold 12px sans-serif' : '12px sans-serif';
+  ctx.fillStyle = label ? '#ffffff' : '#ffffff66';
+  ctx.fillText(label || placeholder, x + 8, y + height / 2 + 1, width - 24);
+
+  ctx.textAlign = 'right';
+  ctx.fillStyle = '#ffffff88';
+  ctx.font = '10px sans-serif';
+  ctx.fillText('▾', x + width - 8, y + height / 2 + 1);
+  ctx.textAlign = 'left';
+
+  registerHitRect(x, y, width, height, onClick);
+}
+
+// Menu déroulant ouvert (voir openAccountDropdown) : plein écran par-dessus tout le reste -- plus
+// simple et fiable qu'un menu ancré (pas de débordement à calculer), cohérent avec les autres
+// superpositions déjà dans le jeu (voir drawCombatEndScreen). Touche n'importe où en dehors d'une
+// option pour fermer sans rien changer.
+function drawAccountDropdownOverlay() {
+  const { rowId, column } = openAccountDropdown;
+  const options = column === 'player'
+    ? availablePlayersForRow(rowId).map((p) => ({ value: p.index, label: p.name }))
+    : availableCharactersForRow(rowId).map((c) => ({ value: c.rosterId, label: c.className, color: c.color }));
+
+  ctx.fillStyle = 'rgba(8, 10, 13, 0.92)';
+  ctx.fillRect(0, TOP_BANNER_HEIGHT, canvas.width, canvas.height - TOP_BANNER_HEIGHT);
+  registerHitRect(0, TOP_BANNER_HEIGHT, canvas.width, canvas.height - TOP_BANNER_HEIGHT, () => { openAccountDropdown = null; });
+
+  const cardX = LIST_PADDING_X;
+  const cardWidth = canvas.width - LIST_PADDING_X * 2;
+  const panelY = TOP_BANNER_HEIGHT + 16;
+  const headerHeight = 40;
+  const rowHeight = 40;
+  const panelHeight = headerHeight + (options.length + 1) * rowHeight + 10;
+
+  ctx.fillStyle = '#1b232b';
+  ctx.fillRect(cardX, panelY, cardWidth, panelHeight);
+  ctx.strokeStyle = '#ffd54f88';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(cardX + 0.5, panelY + 0.5, cardWidth - 1, panelHeight - 1);
+
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.fillStyle = '#ffd54f';
+  ctx.fillText(column === 'player' ? 'Choisir un joueur' : 'Choisir un personnage', cardX + CARD_PADDING, panelY + headerHeight / 2);
+
+  let optY = panelY + headerHeight;
+  const applySelection = (value) => {
+    const row = accountRows.find((r) => r.id === rowId);
+    if (row) row[column === 'player' ? 'playerIndex' : 'characterId'] = value;
+    openAccountDropdown = null;
+  };
+
+  ctx.fillStyle = '#ffffff0d';
+  ctx.fillRect(cardX, optY, cardWidth, rowHeight);
+  ctx.strokeStyle = '#ffffff22';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(cardX + 0.5, optY + 0.5, cardWidth - 1, rowHeight - 1);
+  ctx.font = '13px sans-serif';
+  ctx.fillStyle = '#ffffff99';
+  ctx.fillText('Aucun', cardX + CARD_PADDING, optY + rowHeight / 2 + 1);
+  registerHitRect(cardX, optY, cardWidth, rowHeight, () => applySelection(null));
+  optY += rowHeight;
+
+  for (const option of options) {
+    ctx.fillStyle = '#ffffff0d';
+    ctx.fillRect(cardX, optY, cardWidth, rowHeight);
+    ctx.strokeStyle = '#ffffff22';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(cardX + 0.5, optY + 0.5, cardWidth - 1, rowHeight - 1);
+
+    let textX = cardX + CARD_PADDING;
+    if (option.color) {
+      ctx.fillStyle = option.color;
+      ctx.fillRect(textX, optY + rowHeight / 2 - 7, 14, 14);
+      textX += 22;
+    }
+    ctx.font = 'bold 13px sans-serif';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(option.label, textX, optY + rowHeight / 2 + 1);
+
+    registerHitRect(cardX, optY, cardWidth, rowHeight, () => applySelection(option.value));
+    optY += rowHeight;
+  }
+}
+
+// Sous-onglet "Gestion des comptes" : une ligne par association, 2 colonnes en menu déroulant
+// (joueur, personnage -- voir drawAccountDropdownBox/drawAccountDropdownOverlay) plus un bouton de
+// suppression. "+ Ajouter une association" en bas crée une ligne vide.
+function drawGuildeAccountsTab() {
+  const cardX = LIST_PADDING_X;
+  const cardWidth = canvas.width - LIST_PADDING_X * 2;
+  const viewTop = TOP_BANNER_HEIGHT + GUILDE_SUB_TAB_HEIGHT;
+  let y = viewTop + 16 - getSceneScrollY('guilde');
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, viewTop, canvas.width, canvas.height - viewTop);
+  ctx.clip();
+
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.font = 'bold 15px sans-serif';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(`Associations : ${accountRows.length}`, cardX, y + 14);
+  y += 34;
+
+  const rowHeight = 64;
+  const deleteButtonSize = 28;
+  const gap = 8;
+  const colWidth = (cardWidth - deleteButtonSize - gap * 2 - 16) / 2;
+
+  for (const row of accountRows) {
+    ctx.fillStyle = '#ffffff0d';
+    ctx.fillRect(cardX, y, cardWidth, rowHeight);
+    ctx.strokeStyle = '#ffffff22';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(cardX + 0.5, y + 0.5, cardWidth - 1, rowHeight - 1);
+
+    const boxY = y + (rowHeight - 32) / 2;
+    const player = row.playerIndex != null ? players.find((p) => p.index === row.playerIndex) : null;
+    const character = row.characterId != null ? roster.find((c) => c.rosterId === row.characterId) : null;
+
+    drawAccountDropdownBox(cardX + 8, boxY, colWidth, 32, player ? player.name : '', 'Choisir un joueur', () => {
+      openAccountDropdown = { rowId: row.id, column: 'player' };
+    });
+    drawAccountDropdownBox(cardX + 8 + colWidth + gap, boxY, colWidth, 32, character ? character.className : '', 'Choisir un personnage', () => {
+      openAccountDropdown = { rowId: row.id, column: 'character' };
+    });
+
+    const delX = cardX + cardWidth - deleteButtonSize - 8;
+    const delY = y + (rowHeight - deleteButtonSize) / 2;
+    ctx.fillStyle = '#4a1f1f';
+    ctx.fillRect(delX, delY, deleteButtonSize, deleteButtonSize);
+    ctx.strokeStyle = '#ef535088';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(delX + 0.5, delY + 0.5, deleteButtonSize - 1, deleteButtonSize - 1);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 14px sans-serif';
+    ctx.fillStyle = '#ef5350';
+    ctx.fillText('✕', delX + deleteButtonSize / 2, delY + deleteButtonSize / 2 + 1);
+    registerHitRect(delX, delY, deleteButtonSize, deleteButtonSize, () => removeAccountRow(row.id));
+
+    y += rowHeight + 8;
+  }
+
+  const addButtonHeight = 40;
+  ctx.fillStyle = '#37474f';
+  ctx.fillRect(cardX, y, cardWidth, addButtonHeight);
+  ctx.strokeStyle = '#ffd54f88';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(cardX + 0.5, y + 0.5, cardWidth - 1, addButtonHeight - 1);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.fillStyle = '#ffd54f';
+  ctx.fillText('+ Ajouter une association', cardX + cardWidth / 2, y + addButtonHeight / 2 + 1);
+  registerHitRect(cardX, y, cardWidth, addButtonHeight, addAccountRow);
+  y += addButtonHeight + 16;
+
+  ctx.restore();
+
+  setSceneContentHeight('guilde', y + getSceneScrollY('guilde') - viewTop);
+  drawSceneScrollbar('guilde', viewTop);
+
+  if (openAccountDropdown) drawAccountDropdownOverlay();
+}
+
 // Sous-onglets pas encore implémentés : simple espace réservé, comme les scènes principales
 // avant d'avoir leur tour un vrai contenu.
 function drawGuildePlaceholderTab(label) {
@@ -3752,7 +3963,7 @@ function drawGuildeScene() {
   if (guildeSubTab === 'roster') {
     drawGuildeRosterTab();
   } else if (guildeSubTab === 'comptes') {
-    drawGuildePlaceholderTab('Gestion des comptes');
+    drawGuildeAccountsTab();
   } else {
     drawGuildePlaceholderTab("Stratégie d'équipe");
   }
