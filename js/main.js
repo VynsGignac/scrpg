@@ -782,13 +782,14 @@ function updateDotEffects(character, now) {
 // Brûlure du Pyromane (Boule de feu / Pluie de feu) -- système à part du DOT générique ci-dessus
 // (demande utilisateur explicite) : jusqu'à PYRO_BURN_MAX_STACKS stacks cumulables, l'un ou
 // l'autre des deux sorts en ajoute un (jusqu'au plafond) et rafraîchit la durée à chaque
-// application. La durée (PYRO_BURN_DURATION_MS) dépasse volontairement SKILL_COOLDOWN_MS : tant
-// que Boule de feu/Pluie de feu sont relancés à chaque cycle, la brûlure ne retombe jamais à 0 --
-// l'objectif de jeu est de maintenir les 3 stacks en continu. Un cycle manqué la laisse expirer
-// entièrement (retour à 0), ce qui crée un vrai enjeu d'entretien plutôt qu'un simple DOT passif.
+// application. La durée (PYRO_BURN_DURATION_MS) dépasse volontairement le cooldown de Boule de
+// feu/Pluie de feu (7s/9s) : tant qu'ils sont relancés à chaque cycle, la brûlure ne retombe
+// jamais à 0 -- l'objectif de jeu est de maintenir les 3 stacks en continu. Un cycle manqué la
+// laisse expirer entièrement (retour à 0), ce qui crée un vrai enjeu d'entretien plutôt qu'un
+// simple DOT passif.
 // ------------------------------------------------------------------
 const PYRO_BURN_MAX_STACKS = 3;
-const PYRO_BURN_DURATION_MS = 22000; // > SKILL_COOLDOWN_MS (20000) : survit à un cycle complet si entretenu
+const PYRO_BURN_DURATION_MS = 22000; // > cooldown de Pluie de feu (9000) : survit à un cycle complet si entretenu
 const PYRO_BURN_TICK_MS = 1000;
 const PYRO_BURN_TICK_COEFFICIENT = 0.07; // par stack, appliqué à l'Intelligence du lanceur
 
@@ -822,7 +823,7 @@ function updatePyroBurn(character, now) {
 // COMPTEUR de stacks doit être remis à 0 une fois expiré (sinon un Rempart relancé après une trop
 // longue pause repartirait à tort du dernier compte au lieu de 1, voir applyRempartStack/rempart).
 const GARDIEN_REMPART_MAX_STACKS = 5;
-const GARDIEN_REMPART_DURATION_MS = 22000; // > SKILL_COOLDOWN_MS (20000) : survit à un cycle complet si entretenu
+const GARDIEN_REMPART_DURATION_MS = 22000; // > cooldown de Rempart (6000) : survit à un cycle complet si entretenu
 const GARDIEN_REMPART_REDUCTION_PER_STACK = 0.05; // 5%/stack, jusqu'à -25% à 5 stacks
 
 function updateRempartStacks(character, now) {
@@ -866,14 +867,17 @@ function lowestHpAlly() {
   return players_.reduce((worst, c) => (c.hp / c.hpMax < worst.hp / worst.hpMax ? c : worst));
 }
 
-const SKILL_COOLDOWN_MS = 20000; // même recharge pour tous les sorts, demande utilisateur explicite
+// Chaque sort a désormais son propre cooldown (3-20s, demande utilisateur explicite -- l'ancien
+// palier unique de 20s pour tous était "une erreur" selon ses propres mots) : voir le cooldownMs
+// de chaque sort ci-dessous, dimensionné selon son rôle (filler court, gros sort long...).
 const ZONE_RADIUS = 220; // rayon des sorts de zone centrés sur le lanceur (ex. Cercle sacré)
 
-// Plafond de la Rage du Guerrier (character.rage), relevé de 5 à 10 (demande utilisateur
-// explicite : le Guerrier doit être le meilleur DPS sur la durée en mono-cible, avec un gain de
-// Cri de rage qui dépasse +100% une fois les paliers hauts atteints -- accumuler un stack complet
-// prend du temps, donc seul un combat long en tire pleinement parti, voir criDeRage plus bas).
-const RAGE_MAX = 10;
+// Plafond de la Rage du Guerrier (character.rage) : initialement relevé de 5 à 10 pour que Cri de
+// rage dépasse +100%, puis redescendu à 5 (demande utilisateur explicite) une fois les cooldowns
+// individualisés (voir plus haut) -- avec Frappe rageuse/Tourbillon à 6-8s au lieu de 20s, la
+// Rage se génère bien plus vite qu'avant et un plafond à 10 la faisait saturer en continu,
+// écrasant tout le reste du roster (testé en simulation). À 5, le Guerrier reste fort sans dominer.
+const RAGE_MAX = 5;
 // Génération augmentée (demande utilisateur explicite) : atteindre les paliers hauts doit rester
 // jouable sur une durée de combat réaliste (cap atteint en moins de 2 cycles au lieu de 5).
 const RAGE_GAIN_PER_CAST = 3;
@@ -884,7 +888,7 @@ const SKILLS = {
   // défensive en génèrent, Cri de rage la consomme entièrement pour un buff de dégâts
   // proportionnel.
   frappeRageuse: {
-    id: 'frappeRageuse', name: 'Frappe rageuse', shortLabel: 'Frappe\nrageuse', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'frappeRageuse', name: 'Frappe rageuse', shortLabel: 'Frappe\nrageuse', targeting: 'enemy', cooldownMs: 6000,
     description: '90% Force. Génère 3 Rage.',
     cast(character, target) {
       const { amount, crit } = computeStatDamage(character, 'force', 0.9);
@@ -893,7 +897,7 @@ const SKILLS = {
     },
   },
   tourbillon: {
-    id: 'tourbillon', name: 'Tourbillon', shortLabel: 'Tourbillon', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'tourbillon', name: 'Tourbillon', shortLabel: 'Tourbillon', targeting: 'enemy', cooldownMs: 8000,
     description: '60% Force à tous les ennemis. Génère 3 Rage par ennemi touché.',
     cast(character) {
       for (const enemy of enemies) {
@@ -905,7 +909,7 @@ const SKILLS = {
     },
   },
   postureDefensive: {
-    id: 'postureDefensive', name: 'Posture défensive', shortLabel: 'Posture\ndéf.', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'postureDefensive', name: 'Posture défensive', shortLabel: 'Posture\ndéf.', targeting: 'self', cooldownMs: 12000,
     description: '-40% dégâts subis pendant 4s. Chaque coup encaissé génère de la Rage.',
     cast(character) {
       const now = performance.now();
@@ -915,7 +919,7 @@ const SKILLS = {
     },
   },
   criDeRage: {
-    id: 'criDeRage', name: 'Cri de rage', shortLabel: 'Cri de\nrage', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'criDeRage', name: 'Cri de rage', shortLabel: 'Cri de\nrage', targeting: 'self', cooldownMs: 18000,
     description: "Consomme toute la Rage : +15% dégâts par stack (jusqu'à +150%), pendant 5s +1.5s par stack.",
     cast(character) {
       const stacks = character.rage || 0;
@@ -935,7 +939,7 @@ const SKILLS = {
   // à répétition) vide désormais sa barre de vie plus vite qu'il ne peut se rattraper seul --
   // nécessite l'attention d'un soigneur pour être soutenable, plutôt qu'auto-suffisant.
   eventration: {
-    id: 'eventration', name: 'Éventration', shortLabel: 'Éventration', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'eventration', name: 'Éventration', shortLabel: 'Éventration', targeting: 'enemy', cooldownMs: 6000,
     description: '120% Force (x2 si la cible est sous 50% PV). Coûte 12% de vos PV max.',
     cast(character, target) {
       character.hp = Math.max(1, character.hp - Math.round(character.hpMax * 0.12));
@@ -945,7 +949,7 @@ const SKILLS = {
     },
   },
   cercleDeSang: {
-    id: 'cercleDeSang', name: 'Cercle de sang', shortLabel: 'Cercle\nde sang', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'cercleDeSang', name: 'Cercle de sang', shortLabel: 'Cercle\nde sang', targeting: 'enemy', cooldownMs: 10000,
     description: '70% Force à tous les ennemis. Coûte 20% de vos PV max.',
     cast(character) {
       character.hp = Math.max(1, character.hp - Math.round(character.hpMax * 0.2));
@@ -957,7 +961,7 @@ const SKILLS = {
     },
   },
   peauDePierre: {
-    id: 'peauDePierre', name: 'Peau de pierre', shortLabel: 'Peau de\npierre', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'peauDePierre', name: 'Peau de pierre', shortLabel: 'Peau de\npierre', targeting: 'self', cooldownMs: 14000,
     description: '-30% dégâts subis 5s. Soigne 5% de vos PV max.',
     cast(character) {
       character.damageReductionFactor = 0.3;
@@ -966,7 +970,7 @@ const SKILLS = {
     },
   },
   frenesie: {
-    id: 'frenesie', name: 'Frénésie', shortLabel: 'Frénésie', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'frenesie', name: 'Frénésie', shortLabel: 'Frénésie', targeting: 'self', cooldownMs: 16000,
     description: '+30% dégâts infligés (+50% si sous 50% PV) mais +20% dégâts subis, pendant 5s.',
     cast(character) {
       const now = performance.now();
@@ -980,7 +984,7 @@ const SKILLS = {
 
   // ============================== PALADIN (Force/Savoir, mêlée) ==============================
   chatiment: {
-    id: 'chatiment', name: 'Châtiment', shortLabel: 'Châtiment', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'chatiment', name: 'Châtiment', shortLabel: 'Châtiment', targeting: 'enemy', cooldownMs: 5000,
     description: '110% Force (150% si un bouclier est actif sur vous).',
     cast(character, target) {
       const now = performance.now();
@@ -990,7 +994,7 @@ const SKILLS = {
     },
   },
   vagueSacree: {
-    id: 'vagueSacree', name: 'Vague sacrée', shortLabel: 'Vague\nsacrée', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'vagueSacree', name: 'Vague sacrée', shortLabel: 'Vague\nsacrée', targeting: 'enemy', cooldownMs: 10000,
     description: '50% Force à tous les ennemis. Vous soigne de 40% des dégâts infligés.',
     cast(character) {
       let totalDealt = 0;
@@ -1007,7 +1011,7 @@ const SKILLS = {
   // affaibli -- le Paladin soigne "de temps en temps" en complément, le Prêtre reste le vrai gros
   // soin mono-cible (voir plus bas).
   murSacre: {
-    id: 'murSacre', name: 'Mur sacré', shortLabel: 'Mur\nsacré', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'murSacre', name: 'Mur sacré', shortLabel: 'Mur\nsacré', targeting: 'enemy', cooldownMs: 16000,
     description: 'Bouclier + provoque la cible 3s + -25% dégâts subis, pendant 8s.',
     cast(character, target) {
       // Bouclier + provocation + réduction de dégâts (fusionnés) : le Paladin encaisse pendant
@@ -1025,7 +1029,7 @@ const SKILLS = {
     },
   },
   lumiereDivine: {
-    id: 'lumiereDivine', name: 'Lumière divine', shortLabel: 'Lumière\ndivine', targeting: 'ally', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'lumiereDivine', name: 'Lumière divine', shortLabel: 'Lumière\ndivine', targeting: 'ally', cooldownMs: 8000,
     description: "Soigne l'allié le plus faible (10 + 40% Savoir).",
     cast(character) {
       const heal = 10 + Math.round(character.stats.savoir * 0.4);
@@ -1039,7 +1043,7 @@ const SKILLS = {
   // jouer activement le placement (ou les alternatives qui l'imitent : Forme d'ombre, cible déjà
   // en saignement) soit un vrai choix payant plutôt qu'un bonus cosmétique.
   coupSournois: {
-    id: 'coupSournois', name: 'Coup sournois', shortLabel: 'Coup\nsournois', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'coupSournois', name: 'Coup sournois', shortLabel: 'Coup\nsournois', targeting: 'enemy', cooldownMs: 6000,
     description: "120% Force, x2.5 dans le dos (ou via Forme d'ombre / cible en saignement).",
     cast(character, target) {
       const now = performance.now();
@@ -1054,7 +1058,7 @@ const SKILLS = {
     },
   },
   fauchage: {
-    id: 'fauchage', name: 'Fauchage', shortLabel: 'Fauchage', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'fauchage', name: 'Fauchage', shortLabel: 'Fauchage', targeting: 'enemy', cooldownMs: 10000,
     description: '60% Force à tous les ennemis + saignement (3 ticks).',
     cast(character) {
       for (const enemy of enemies) {
@@ -1070,7 +1074,7 @@ const SKILLS = {
     },
   },
   formeDOmbre: {
-    id: 'formeDOmbre', name: "Forme d'ombre", shortLabel: "Forme\nd'ombre", targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'formeDOmbre', name: "Forme d'ombre", shortLabel: "Forme\nd'ombre", targeting: 'self', cooldownMs: 14000,
     description: "+25% esquive pendant 5s. La prochaine attaque compte comme dans le dos.",
     cast(character) {
       const now = performance.now();
@@ -1081,7 +1085,7 @@ const SKILLS = {
     },
   },
   surinage: {
-    id: 'surinage', name: 'Surinage', shortLabel: 'Surinage', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'surinage', name: 'Surinage', shortLabel: 'Surinage', targeting: 'enemy', cooldownMs: 8000,
     description: '70% Force + saignement plus long (4 ticks).',
     cast(character, target) {
       const { amount, crit } = computeStatDamage(character, 'force', 0.7);
@@ -1096,7 +1100,7 @@ const SKILLS = {
 
   // ============================== MAGE (Intelligence, distance) -- glace uniquement ==============================
   eclatDeGlace: {
-    id: 'eclatDeGlace', name: 'Éclat de glace', shortLabel: 'Éclat\nde glace', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'eclatDeGlace', name: 'Éclat de glace', shortLabel: 'Éclat\nde glace', targeting: 'enemy', cooldownMs: 6000,
     description: '80% Intelligence. Ralentit la cible (déplacement et cadence d\'attaque) 2.5s.',
     cast(character, target) {
       const { amount, crit } = computeStatDamage(character, 'intelligence', 0.8);
@@ -1110,7 +1114,7 @@ const SKILLS = {
     },
   },
   novaDeGivre: {
-    id: 'novaDeGivre', name: 'Nova de givre', shortLabel: 'Nova de\ngivre', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'novaDeGivre', name: 'Nova de givre', shortLabel: 'Nova de\ngivre', targeting: 'enemy', cooldownMs: 10000,
     description: '50% Intelligence à tous les ennemis. Les ralentit 2.5s.',
     cast(character) {
       for (const enemy of enemies) {
@@ -1124,7 +1128,7 @@ const SKILLS = {
     },
   },
   voileDeGivre: {
-    id: 'voileDeGivre', name: 'Voile de givre', shortLabel: 'Voile de\ngivre', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'voileDeGivre', name: 'Voile de givre', shortLabel: 'Voile de\ngivre', targeting: 'self', cooldownMs: 14000,
     description: 'Bouclier. Ralentit quiconque le frappe.',
     cast(character) {
       const shield = 15 + Math.round(character.stats.intelligence * 1.0);
@@ -1135,7 +1139,7 @@ const SKILLS = {
     },
   },
   gel: {
-    id: 'gel', name: 'Gel', shortLabel: 'Gel', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'gel', name: 'Gel', shortLabel: 'Gel', targeting: 'enemy', cooldownMs: 16000,
     description: '20% Intelligence + ralentit, ou 30% + étourdit 2s si la cible est déjà ralentie.',
     cast(character, target) {
       const now = performance.now();
@@ -1160,7 +1164,7 @@ const SKILLS = {
   // la durée, l'objectif de jeu étant de maintenir 3 stacks en continu plutôt que de détoner
   // systématiquement (voir Explosion, qui ne convertit plus que la moitié de la brûlure).
   bouleDeFeu: {
-    id: 'bouleDeFeu', name: 'Boule de feu', shortLabel: 'Boule\nde feu', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'bouleDeFeu', name: 'Boule de feu', shortLabel: 'Boule\nde feu', targeting: 'enemy', cooldownMs: 7000,
     description: "45% Intelligence. Pose 1 stack de brûlure (jusqu'à 3, entretenue si relancée).",
     cast(character, target) {
       const { amount, crit } = computeStatDamage(character, 'intelligence', 0.45);
@@ -1170,7 +1174,7 @@ const SKILLS = {
     },
   },
   pluieDeFeu: {
-    id: 'pluieDeFeu', name: 'Pluie de feu', shortLabel: 'Pluie de\nfeu', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'pluieDeFeu', name: 'Pluie de feu', shortLabel: 'Pluie de\nfeu', targeting: 'enemy', cooldownMs: 9000,
     description: '25% Intelligence à tous les ennemis. Pose 1 stack de brûlure sur chacun.',
     cast(character) {
       for (const enemy of enemies) {
@@ -1183,7 +1187,7 @@ const SKILLS = {
     },
   },
   bouclierDeFlammes: {
-    id: 'bouclierDeFlammes', name: 'Bouclier de flammes', shortLabel: 'Bouclier\nflammes', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'bouclierDeFlammes', name: 'Bouclier de flammes', shortLabel: 'Bouclier\nflammes', targeting: 'self', cooldownMs: 14000,
     description: 'Bouclier. Brûle quiconque le frappe.',
     cast(character) {
       const shield = 15 + Math.round(character.stats.intelligence * 1.0);
@@ -1194,7 +1198,7 @@ const SKILLS = {
     },
   },
   explosion: {
-    id: 'explosion', name: 'Explosion', shortLabel: 'Explosion', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'explosion', name: 'Explosion', shortLabel: 'Explosion', targeting: 'enemy', cooldownMs: 12000,
     description: '30% Intelligence + détone 50% de la brûlure stockée (remet les stacks à 0).',
     cast(character, target) {
       // Détone les stacks de brûlure actifs pour un burst immédiat -- ne convertit plus que la
@@ -1215,7 +1219,7 @@ const SKILLS = {
 
   // ============================== CHASSEUR (Force, distance) ==============================
   tirPercant: {
-    id: 'tirPercant', name: 'Tir perçant', shortLabel: 'Tir\nperçant', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'tirPercant', name: 'Tir perçant', shortLabel: 'Tir\nperçant', targeting: 'enemy', cooldownMs: 5000,
     description: "90% Force. Jusqu'à +50% à longue portée, +15% si la cible est marquée.",
     cast(character, target) {
       const now = performance.now();
@@ -1227,7 +1231,7 @@ const SKILLS = {
     },
   },
   tirEnRafale: {
-    id: 'tirEnRafale', name: 'Tir en rafale', shortLabel: 'Tir en\nrafale', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'tirEnRafale', name: 'Tir en rafale', shortLabel: 'Tir en\nrafale', targeting: 'enemy', cooldownMs: 10000,
     description: "Jusqu'à 3 tirs dégressifs (80/48/29% Force), chacun sur un ennemi différent.",
     cast(character) {
       // Vise jusqu'à 3 ennemis DIFFÉRENTS (dégressif à chaque tir) -- un rebond ne retombe jamais
@@ -1246,7 +1250,7 @@ const SKILLS = {
     },
   },
   repliTactique: {
-    id: 'repliTactique', name: 'Repli tactique', shortLabel: 'Repli\ntactique', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'repliTactique', name: 'Repli tactique', shortLabel: 'Repli\ntactique', targeting: 'self', cooldownMs: 14000,
     description: "Esquive totale 1s + recul loin de l'ennemi le plus proche.",
     cast(character) {
       const now = performance.now();
@@ -1261,7 +1265,7 @@ const SKILLS = {
     },
   },
   piegeAOurs: {
-    id: 'piegeAOurs', name: 'Piège à ours', shortLabel: 'Piège\nà ours', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'piegeAOurs', name: 'Piège à ours', shortLabel: 'Piège\nà ours', targeting: 'enemy', cooldownMs: 8000,
     description: "70% Force, jusqu'à +60% à longue portée. Marque la cible 6s (bonus pour Tir perçant).",
     cast(character, target) {
       const dist = Math.hypot(character.x - target.x, character.y - target.y);
@@ -1274,7 +1278,7 @@ const SKILLS = {
 
   // ============================== DRUIDE (Intelligence, distance) ==============================
   morsureVenimeuse: {
-    id: 'morsureVenimeuse', name: 'Morsure venimeuse', shortLabel: 'Morsure\nvenim.', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'morsureVenimeuse', name: 'Morsure venimeuse', shortLabel: 'Morsure\nvenim.', targeting: 'enemy', cooldownMs: 6000,
     description: '60% Intelligence + poison (4 ticks).',
     cast(character, target) {
       const { amount, crit } = computeStatDamage(character, 'intelligence', 0.6);
@@ -1287,7 +1291,7 @@ const SKILLS = {
     },
   },
   epinesEmpoisonnees: {
-    id: 'epinesEmpoisonnees', name: 'Épines empoisonnées', shortLabel: 'Épines\nempois.', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'epinesEmpoisonnees', name: 'Épines empoisonnées', shortLabel: 'Épines\nempois.', targeting: 'enemy', cooldownMs: 10000,
     description: "Consomme le poison accumulé sur les ennemis pour soigner l'allié le plus faible.",
     cast(character) {
       // Consomme le poison accumulé sur tous les ennemis (voir applyDot/poisonStacks) pour
@@ -1304,7 +1308,7 @@ const SKILLS = {
     },
   },
   carapaceDEcorce: {
-    id: 'carapaceDEcorce', name: "Carapace d'écorce", shortLabel: "Carapace\nd'écorce", targeting: 'ally', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'carapaceDEcorce', name: "Carapace d'écorce", shortLabel: "Carapace\nd'écorce", targeting: 'ally', cooldownMs: 8000,
     description: "Bouclier + soin sur l'allié le plus faible.",
     cast(character) {
       const target = lowestHpAlly() || character;
@@ -1316,7 +1320,7 @@ const SKILLS = {
     },
   },
   chantDeLaForet: {
-    id: 'chantDeLaForet', name: 'Chant de la forêt', shortLabel: 'Chant de\nla forêt', targeting: 'ally', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'chantDeLaForet', name: 'Chant de la forêt', shortLabel: 'Chant de\nla forêt', targeting: 'ally', cooldownMs: 14000,
     description: 'Soigne tout le groupe.',
     cast(character) {
       const heal = Math.round(character.stats.savoir * 0.4);
@@ -1332,10 +1336,13 @@ const SKILLS = {
   // douleur, son soin de zone) pour un bonus cumulatif -- enchaîner Soin majeur avant de déclencher
   // Mot de douleur rentabilise l'attente. Mot de douleur rend aussi un peu de mana à qui il soigne.
   motDeDouleur: {
-    id: 'motDeDouleur', name: 'Mot de douleur', shortLabel: 'Mot de\ndouleur', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
-    description: '50% Intelligence + soigne tout le groupe (boosté par la Grâce) et rend un peu de mana.',
+    id: 'motDeDouleur', name: 'Mot de douleur', shortLabel: 'Mot de\ndouleur', targeting: 'enemy', cooldownMs: 8000,
+    description: '75% Intelligence + soigne tout le groupe (boosté par la Grâce) et rend un peu de mana.',
     cast(character, target) {
-      const { amount, crit } = computeStatDamage(character, 'intelligence', 0.5);
+      // Dégâts +50% (demande utilisateur explicite) : le Prêtre restait très en retrait niveau
+      // dégâts même après les cooldowns individualisés -- il ne sera jamais un vrai DPS, mais ne
+      // doit pas non plus être totalement inoffensif.
+      const { amount, crit } = computeStatDamage(character, 'intelligence', 0.75);
       if (dealDamage(target, amount, '245, 245, 245', character, crit, 'Mot de douleur')) {
         const graceStacks = character.priestGraceStacks || 0;
         character.priestGraceStacks = 0;
@@ -1350,7 +1357,7 @@ const SKILLS = {
     },
   },
   cercleSacre: {
-    id: 'cercleSacre', name: 'Cercle sacré', shortLabel: 'Cercle\nsacré', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'cercleSacre', name: 'Cercle sacré', shortLabel: 'Cercle\nsacré', targeting: 'self', cooldownMs: 12000,
     description: '-25% dégâts subis pour les alliés proches ; brûlure + ralentissement aux ennemis proches.',
     cast(character) {
       const now = performance.now();
@@ -1365,7 +1372,7 @@ const SKILLS = {
         if (Math.hypot(enemy.x - character.x, enemy.y - character.y) > ZONE_RADIUS) continue;
         applyDot(enemy, {
           kind: 'burn', ticksLeft: 3, tickIntervalMs: 1000, rgb: '245, 245, 245', source: character,
-          skillName: 'Cercle sacré', damagePerTick: Math.round(character.stats.intelligence * 0.1),
+          skillName: 'Cercle sacré', damagePerTick: Math.round(character.stats.intelligence * 0.15), // +50%, voir Mot de douleur
         });
         enemy.slowMultiplier = 0.6;
         enemy.slowUntil = now + 3000;
@@ -1373,7 +1380,7 @@ const SKILLS = {
     },
   },
   voileProtecteur: {
-    id: 'voileProtecteur', name: 'Voile protecteur', shortLabel: 'Voile\nprotecteur', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'voileProtecteur', name: 'Voile protecteur', shortLabel: 'Voile\nprotecteur', targeting: 'self', cooldownMs: 10000,
     description: 'Bouclier sur soi.',
     cast(character) {
       const shield = 15 + Math.round(character.stats.savoir * 1.0);
@@ -1383,7 +1390,7 @@ const SKILLS = {
     },
   },
   soinMajeur: {
-    id: 'soinMajeur', name: 'Soin majeur', shortLabel: 'Soin\nmajeur', targeting: 'ally', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'soinMajeur', name: 'Soin majeur', shortLabel: 'Soin\nmajeur', targeting: 'ally', cooldownMs: 5000,
     description: "Gros soin sur l'allié le plus faible (plus fort s'il vient d'être touché). Pose un stack de Grâce (jusqu'à 5) pour le prochain Mot de douleur.",
     cast(character) {
       const target = lowestHpAlly() || character;
@@ -1401,7 +1408,7 @@ const SKILLS = {
   // Épidémie (sa zone) renforcée : poison plus fort, explosion plus grosse et se déclenchant plus
   // souvent (seuil abaissé).
   drainDeVie: {
-    id: 'drainDeVie', name: 'Drain de vie', shortLabel: 'Drain de\nvie', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'drainDeVie', name: 'Drain de vie', shortLabel: 'Drain de\nvie', targeting: 'enemy', cooldownMs: 6000,
     description: '50% Intelligence. Vous soigne de 50% des dégâts infligés.',
     cast(character, target) {
       const { amount, crit } = computeStatDamage(character, 'intelligence', 0.5);
@@ -1411,7 +1418,7 @@ const SKILLS = {
     },
   },
   epidemie: {
-    id: 'epidemie', name: 'Épidémie', shortLabel: 'Épidémie', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'epidemie', name: 'Épidémie', shortLabel: 'Épidémie', targeting: 'enemy', cooldownMs: 10000,
     description: 'Empoisonne tous les ennemis. Explosion de zone si vos dégâts totaux dépassent un seuil (qui augmente ensuite).',
     cast(character) {
       for (const enemy of enemies) {
@@ -1436,7 +1443,7 @@ const SKILLS = {
     },
   },
   pacteDeProtection: {
-    id: 'pacteDeProtection', name: 'Pacte de protection', shortLabel: 'Pacte de\nprotection', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'pacteDeProtection', name: 'Pacte de protection', shortLabel: 'Pacte de\nprotection', targeting: 'self', cooldownMs: 14000,
     description: 'Bouclier. Renvoie les dégâts absorbés à son expiration.',
     cast(character) {
       const shield = 15 + Math.round(character.stats.intelligence * 1.0);
@@ -1449,7 +1456,7 @@ const SKILLS = {
     },
   },
   malediction: {
-    id: 'malediction', name: 'Malédiction', shortLabel: 'Malédic-\ntion', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'malediction', name: 'Malédiction', shortLabel: 'Malédic-\ntion', targeting: 'enemy', cooldownMs: 12000,
     description: '-20% dégâts infligés par la cible pendant 5s. Explosion de zone si elle meurt maudite.',
     cast(character, target) {
       const now = performance.now();
@@ -1465,7 +1472,7 @@ const SKILLS = {
   // compensé par un Totem qui devient un vrai gros bonus de zone (+20% dégâts et soin conséquent)
   // pour le groupe positionné dessus.
   frappeDesEsprits: {
-    id: 'frappeDesEsprits', name: 'Frappe des esprits', shortLabel: 'Frappe\nesprits', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'frappeDesEsprits', name: 'Frappe des esprits', shortLabel: 'Frappe\nesprits', targeting: 'enemy', cooldownMs: 6000,
     description: '70% Intelligence. +15% dégâts subis par la cible pendant 5s.',
     cast(character, target) {
       const { amount, crit } = computeStatDamage(character, 'intelligence', 0.7);
@@ -1476,7 +1483,7 @@ const SKILLS = {
     },
   },
   chaineDEclairs: {
-    id: 'chaineDEclairs', name: "Chaîne d'éclairs", shortLabel: "Chaîne\nd'éclairs", targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'chaineDEclairs', name: "Chaîne d'éclairs", shortLabel: "Chaîne\nd'éclairs", targeting: 'enemy', cooldownMs: 8000,
     description: "40% Intelligence. 2/3 de chance de rebondir (25%) sur un autre ennemi.",
     cast(character, target) {
       const { amount, crit } = computeStatDamage(character, 'intelligence', 0.4);
@@ -1496,7 +1503,7 @@ const SKILLS = {
     },
   },
   boucliersDesAncetres: {
-    id: 'boucliersDesAncetres', name: 'Bouclier des ancêtres', shortLabel: 'Bouclier\nancêtres', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'boucliersDesAncetres', name: 'Bouclier des ancêtres', shortLabel: 'Bouclier\nancêtres', targeting: 'self', cooldownMs: 12000,
     description: 'Bouclier + petit soin sur soi.',
     cast(character) {
       const shield = 15 + Math.round(character.stats.intelligence * 1.0);
@@ -1507,7 +1514,7 @@ const SKILLS = {
     },
   },
   totem: {
-    id: 'totem', name: 'Totem', shortLabel: 'Totem', targeting: 'ally', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'totem', name: 'Totem', shortLabel: 'Totem', targeting: 'ally', cooldownMs: 16000,
     description: '+20% dégâts et un soin pour le groupe resté à proximité, pendant 8s.',
     cast(character) {
       // Gros bonus de zone (demande utilisateur explicite : +20% dégâts et un vrai soin, pas un
@@ -1532,11 +1539,11 @@ const SKILLS = {
   // ============================== GARDIEN (Force, mêlée) ==============================
   // Tank pur (demande utilisateur explicite) : Rempart (character.rempartStacks, 0-5) se pose et
   // se rafraîchit à chaque lancer -- l'entretenir en boucle le maintient à son plafond en continu,
-  // même logique que la brûlure du Pyromane (voir GARDIEN_REMPART_DURATION_MS, plus long que
-  // SKILL_COOLDOWN_MS pour survivre à un cycle complet). Représailles transforme ces stacks en
+  // même logique que la brûlure du Pyromane (voir GARDIEN_REMPART_DURATION_MS, plus long que le
+  // cooldown de Rempart lui-même pour survivre à un cycle complet). Représailles transforme ces stacks en
   // dégâts réels ; Cri de défi est le taunt de zone demandé.
   coupDeBouclier: {
-    id: 'coupDeBouclier', name: 'Coup de bouclier', shortLabel: 'Coup de\nbouclier', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'coupDeBouclier', name: 'Coup de bouclier', shortLabel: 'Coup de\nbouclier', targeting: 'enemy', cooldownMs: 5000,
     description: "70% Force. Génère une menace bonus (le double des dégâts infligés).",
     cast(character, target) {
       const { amount, crit } = computeStatDamage(character, 'force', 0.7);
@@ -1546,7 +1553,7 @@ const SKILLS = {
     },
   },
   rempart: {
-    id: 'rempart', name: 'Rempart', shortLabel: 'Rempart', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'rempart', name: 'Rempart', shortLabel: 'Rempart', targeting: 'self', cooldownMs: 6000,
     description: "Pose 1 stack de réduction de dégâts (jusqu'à 5, 5%/stack, jusqu'à -25%). Rafraîchit la durée à chaque lancer.",
     cast(character) {
       const now = performance.now();
@@ -1557,7 +1564,7 @@ const SKILLS = {
     },
   },
   criDeDefi: {
-    id: 'criDeDefi', name: 'Cri de défi', shortLabel: 'Cri de\ndéfi', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'criDeDefi', name: 'Cri de défi', shortLabel: 'Cri de\ndéfi', targeting: 'self', cooldownMs: 14000,
     description: 'Provoque tous les ennemis proches pendant 4s, avec une grosse menace sur chacun.',
     cast(character) {
       const now = performance.now();
@@ -1571,7 +1578,7 @@ const SKILLS = {
     },
   },
   represailles: {
-    id: 'represailles', name: 'Représailles', shortLabel: 'Représ-\nailles', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    id: 'represailles', name: 'Représailles', shortLabel: 'Représ-\nailles', targeting: 'enemy', cooldownMs: 8000,
     description: "60% Force + 10% par stack de Rempart actif (jusqu'à +50% à 5 stacks).",
     cast(character, target) {
       const stacks = character.rempartStacks || 0;
@@ -1606,8 +1613,9 @@ function isInRangeOf(character, target) {
   return combat.melee ? dist <= avoidHalfExtent(character, target) + 20 : dist <= rangeFor(character) + 20;
 }
 
-// Coût en mana : le même pour tous les sorts (demande utilisateur explicite, même principe que
-// SKILL_COOLDOWN_MS déjà commun à tous). Régénération passive plus bas (voir updateManaRegen).
+// Coût en mana : le même pour tous les sorts (demande utilisateur explicite) -- contrairement aux
+// cooldowns, restés uniques par sort ci-dessus (voir leur cooldownMs respectif). Régénération
+// passive plus bas (voir updateManaRegen).
 const SKILL_MANA_COST = 20;
 const MANA_REGEN_PER_SEC = 2; // socle commun
 const MANA_REGEN_PER_SAVOIR = 0.3; // + bonus selon le Savoir (les soigneurs récupèrent plus vite)
