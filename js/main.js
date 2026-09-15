@@ -245,7 +245,7 @@ applyActivePartyToCombatSlots();
 // distance) et lettre affichée sur le carré changent, pas le reste du moteur de combat (évitement,
 // riposte passive, etc., déjà génériques).
 const ENCOUNTERS = [
-  { name: 'Gobelin', label: 'G', color: '#8bc34a', size: 44, hpMax: 250, statValue: 10, combat: { melee: true, stat: 'force' } },
+  { name: 'Gobelin', label: 'G', color: '#8bc34a', size: 44, hpMax: 250, statValue: 10, combat: { melee: true, stat: 'force' }, hasBombAttack: true },
   { name: 'Archer squelette', label: 'A', color: '#cfd8dc', size: 52, hpMax: 400, statValue: 16, combat: { melee: false, stat: 'force' } },
   { name: 'Brute orque', label: 'O', color: '#795548', size: 64, hpMax: 800, statValue: 26, combat: { melee: true, stat: 'force' } },
   { name: 'Sorcière', label: 'S', color: '#ab47bc', size: 50, hpMax: 600, statValue: 22, combat: { melee: false, stat: 'force' } },
@@ -439,6 +439,71 @@ function highestThreatPlayer(now) {
   return { best, bestThreat };
 }
 
+// ------------------------------------------------------------
+// Bombe du Gobelin (voir ENCOUNTERS/hasBombAttack, demande utilisateur explicite) : toutes les
+// BOMB_INTERVAL_MS, il fonce (vitesse multipliée, voir BOMB_DASH_SPEED_MULTIPLIER/updateMove) se
+// placer sous un joueur qui n'a PAS l'aggro actuelle (enemy.attackTarget), y pose une bombe
+// télégraphiée (icône + zone qui se referme, voir drawBomb) puis explose après BOMB_FUSE_MS en
+// infligeant BOMB_DAMAGE à quiconque reste dans BOMB_RADIUS -- pas seulement sa cible initiale,
+// qui peut donc s'en écarter entre-temps.
+// ------------------------------------------------------------
+const BOMB_INTERVAL_MS = 10000;
+const BOMB_FUSE_MS = 2000;
+const BOMB_RADIUS = 70;
+const BOMB_DAMAGE = 50;
+const BOMB_DASH_SPEED_MULTIPLIER = 4;
+let activeBombs = [];
+let nextBombId = 1;
+
+function spawnBomb(x, y, source) {
+  const now = performance.now();
+  activeBombs.push({ id: nextBombId++, x, y, source, plantedAt: now, explodeAt: now + BOMB_FUSE_MS, exploded: false });
+}
+
+function updateBombs(now) {
+  for (const bomb of activeBombs) {
+    if (bomb.exploded || now < bomb.explodeAt) continue;
+    bomb.exploded = true;
+    for (const character of characters) {
+      if (!character.playerControlled || character.hp <= 0) continue;
+      if (Math.hypot(character.x - bomb.x, character.y - bomb.y) <= BOMB_RADIUS) {
+        dealDamage(character, BOMB_DAMAGE, '255, 111, 0', bomb.source, false, 'Bombe');
+      }
+    }
+  }
+  // Courte persistance après l'explosion (juste pour laisser le flash de dégâts se voir) avant de
+  // retirer la bombe pour de bon.
+  activeBombs = activeBombs.filter((bomb) => !bomb.exploded || now - bomb.explodeAt < 300);
+}
+
+// Fonce se placer sous un joueur sans aggro puis pose une bombe (voir spawnBomb) -- réutilise le
+// système de déplacement existant (pathPoints/isMoving, voir updateMove), juste temporairement
+// accéléré (bombDashUntil) pour rendre le geste "rapide" (demande utilisateur explicite).
+function updateBombAttack(enemy, now) {
+  if (enemy.bombDashTarget) {
+    if (!enemy.isMoving) {
+      spawnBomb(enemy.x, enemy.y, enemy);
+      enemy.bombDashTarget = null;
+      enemy.bombDashUntil = 0;
+    }
+    return; // en pleine course (ou vient d'arriver) : rien d'autre à déclencher ce tour-ci
+  }
+
+  if (!enemy.nextBombAt) enemy.nextBombAt = now + BOMB_INTERVAL_MS;
+  if (now < enemy.nextBombAt) return;
+  enemy.nextBombAt = now + BOMB_INTERVAL_MS;
+
+  const withoutAggro = characters.filter((c) => c.playerControlled && c.hp > 0 && c !== enemy.attackTarget);
+  const pool = withoutAggro.length > 0 ? withoutAggro : characters.filter((c) => c.playerControlled && c.hp > 0);
+  if (pool.length === 0) return;
+
+  const victim = pool[Math.floor(Math.random() * pool.length)];
+  enemy.bombDashTarget = { x: victim.x, y: victim.y };
+  enemy.pathPoints = [{ x: victim.x, y: victim.y }];
+  enemy.isMoving = true;
+  enemy.bombDashUntil = now + 3000;
+}
+
 // IA d'un ennemi (voir ENCOUNTERS) : attaque le personnage qui a le plus de menace vis-à-vis de
 // lui (voir highestThreatPlayer) -- peut donc changer de cible en cours de combat si quelqu'un
 // d'autre prend l'aggro. Une provocation active (Fierté du juste) prend le pas sur la menace tant
@@ -466,6 +531,8 @@ function updateEnemyAI(enemy, now) {
       enemy.attackTarget = alivePlayers[Math.floor(Math.random() * alivePlayers.length)];
     }
   }
+
+  if (enemy.hasBombAttack) updateBombAttack(enemy, now);
 
   const target = enemy.attackTarget;
   if (enemy.isMoving || isInRangeOf(enemy, target)) return;
@@ -1747,7 +1814,10 @@ function updateMove(character, dt) {
   // Étourdi (Gel du Mage) : ne bouge plus du tout tant que ça dure.
   if ((character.stunnedUntil || 0) > now) return;
   // Ralenti (Trait de givre/Éclat de glace) : vitesse de déplacement réduite.
-  const speedMultiplier = (character.slowUntil || 0) > now ? (character.slowMultiplier || 1) : 1;
+  let speedMultiplier = (character.slowUntil || 0) > now ? (character.slowMultiplier || 1) : 1;
+  // Charge de bombe du Gobelin (voir updateBombAttack) : déplacement temporairement accéléré pour
+  // rendre le geste "rapide" (demande utilisateur explicite).
+  if ((character.bombDashUntil || 0) > now) speedMultiplier *= BOMB_DASH_SPEED_MULTIPLIER;
   let remaining = PIXELS_PER_MS * speedMultiplier * dt;
 
   while (remaining > 0 && character.pathPoints.length > 0) {
@@ -2255,6 +2325,34 @@ window.addEventListener('blur', clearPointerState);
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) clearPointerState();
 });
+
+// Bombe télégraphiée avant explosion (voir updateBombAttack/updateBombs) : zone de dégâts fixe en
+// fond + anneau qui se referme au fil de la mèche, pour prévenir juste avant que ça explose.
+// Dessinée avant les personnages (voir draw()) pour rester "au sol", sous leurs pieds.
+function drawBomb(bomb, now) {
+  const progress = Math.min(1, (now - bomb.plantedAt) / (bomb.explodeAt - bomb.plantedAt));
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(bomb.x, bomb.y, BOMB_RADIUS, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255, 87, 34, 0.14)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255, 87, 34, 0.7)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(bomb.x, bomb.y, BOMB_RADIUS * (1 - progress), 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(255, 213, 79, 0.9)';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = '26px sans-serif';
+  ctx.fillText('💣', bomb.x, bomb.y);
+}
 
 function drawCharacter(character) {
   const half = character.size / 2;
@@ -3425,6 +3523,9 @@ function resetTransientCombatState(entity) {
   entity.priestGraceStacks = 0;
   entity.rempartStacks = 0;
   entity.rempartExpiresAt = 0;
+  entity.nextBombAt = 0;
+  entity.bombDashTarget = null;
+  entity.bombDashUntil = 0;
 }
 
 // Remet les personnages sélectionnés en place au début d'un combat (PV/mana pleins, plus d'effets
@@ -3472,11 +3573,13 @@ function resetCombatEncounter(levelIndex) {
     enemy.combatOverride = encounter.combat;
     enemy.stats = { force: encounter.statValue };
     enemy.trainingDummy = false;
+    enemy.hasBombAttack = !!encounter.hasBombAttack;
     resetTransientCombatState(enemy);
     const spawn = clampPointToField({ size: encounter.size }, cx, cy - 220);
     enemy.x = spawn.x;
     enemy.y = spawn.y;
   }
+  activeBombs = [];
 
   resetPlayerCombatState();
 }
@@ -3519,11 +3622,13 @@ function enterTrainingCombat() {
     enemy.combatOverride = { melee: true, stat: 'force' };
     enemy.stats = { force: 0 };
     enemy.trainingDummy = true;
+    enemy.hasBombAttack = false;
     resetTransientCombatState(enemy);
     const spawn = clampPointToField({ size: enemy.size }, cx, cy - 220);
     enemy.x = spawn.x;
     enemy.y = spawn.y;
   }
+  activeBombs = [];
 
   resetPlayerCombatState();
   combatStats = createCombatStats();
@@ -4029,6 +4134,7 @@ function draw() {
   hoverRects = [];
 
   if (currentScene === 'combat') {
+    for (const bomb of activeBombs) drawBomb(bomb, performance.now());
     for (const character of characters) drawCharacter(character);
     for (const character of characters) {
       if (character.playerControlled) drawCharacterBars(character);
@@ -4164,6 +4270,7 @@ function loop(now) {
       updateShield(character, now);
       updateManaRegen(character, dt);
     }
+    updateBombs(now);
   }
   updateFloatingTexts(now);
   updateSkillEffects(now);
