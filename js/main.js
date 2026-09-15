@@ -250,7 +250,8 @@ applyActivePartyToCombatSlots();
 // déplacer (Archer gobelin) -- toutes les 10s (BOMB_INTERVAL_MS) dans les deux cas. stationary
 // (Artificier gobelin) : ne s'approche jamais de personne (voir updateEnemyAI), attaque quand
 // même au corps à corps si un joueur vient à lui. flyingBombAttack : lâche en plus une bombe
-// volante (voir launchFlyingBomb) toutes les FLYING_BOMB_INTERVAL_MS.
+// volante (voir launchFlyingBomb/updateFlyingBombAttack) selon un délai variable (base +
+// bonus de proximité).
 const ENCOUNTERS = [
   { name: 'Gobelin', label: 'G', color: '#8bc34a', size: 33, hpMax: 1500, statValue: 10, combat: { melee: true, stat: 'force' }, bombAttack: { targeting: 'noAggroPlayer', count: 1 } },
   { name: 'Archer gobelin', label: 'A', color: '#cfd8dc', size: 39, hpMax: 400, statValue: 16, combat: { melee: false, stat: 'force' }, bombAttack: { targeting: 'random', count: 3 } },
@@ -575,8 +576,15 @@ function updateBombAttack(enemy, now) {
 // disparaît sans rien déclencher ; si elle atteint le bord bas, elle explose instantanément sur
 // TOUTE la map (pas de rayon, contrairement aux bombes au sol) pour FLYING_BOMB_DAMAGE à chaque
 // joueur vivant.
+// Délai avant le prochain lancer (demande utilisateur explicite) : ARTIFICIER_BOMB_BASE_MS fixes,
+// puis au moment précis où ce délai s'écoule, on compte une seule fois combien de joueurs sont
+// dans la zone de proximité (ARTIFICIER_PROXIMITY_RADIUS, tracée en permanence autour de lui, voir
+// drawArtificierProximityZone) et on ajoute ARTIFICIER_PROXIMITY_BONUS_MS par joueur trouvé --
+// jamais recompté ensuite, le délai total est donc figé dès cet instant.
 // ------------------------------------------------------------
-const FLYING_BOMB_INTERVAL_MS = 15000;
+const ARTIFICIER_BOMB_BASE_MS = 4000;
+const ARTIFICIER_PROXIMITY_BONUS_MS = 3000;
+const ARTIFICIER_PROXIMITY_RADIUS = 220;
 const FLYING_BOMB_HP = 100;
 const FLYING_BOMB_SPEED = 0.2; // px/ms
 const FLYING_BOMB_DAMAGE = 50;
@@ -601,10 +609,22 @@ function launchFlyingBomb(enemy) {
 }
 
 function updateFlyingBombAttack(enemy, now) {
-  if (!enemy.nextFlyingBombAt) enemy.nextFlyingBombAt = now + FLYING_BOMB_INTERVAL_MS;
+  if (!enemy.nextBombCheckAt) enemy.nextBombCheckAt = now + ARTIFICIER_BOMB_BASE_MS;
+
+  if (!enemy.flyingBombCounted) {
+    if (now < enemy.nextBombCheckAt) return;
+    const nearby = characters.filter((c) => (
+      c.playerControlled && c.hp > 0 && Math.hypot(c.x - enemy.x, c.y - enemy.y) <= ARTIFICIER_PROXIMITY_RADIUS
+    )).length;
+    enemy.nextFlyingBombAt = enemy.nextBombCheckAt + nearby * ARTIFICIER_PROXIMITY_BONUS_MS;
+    enemy.flyingBombCounted = true;
+    return;
+  }
+
   if (now < enemy.nextFlyingBombAt) return;
-  enemy.nextFlyingBombAt = now + FLYING_BOMB_INTERVAL_MS;
   launchFlyingBomb(enemy);
+  enemy.nextBombCheckAt = now + ARTIFICIER_BOMB_BASE_MS;
+  enemy.flyingBombCounted = false;
 }
 
 function updateFlyingBombs(dt, now) {
@@ -1917,7 +1937,11 @@ function castSkill(character, skillId) {
   if ((character.mana || 0) < SKILL_MANA_COST) return false;
 
   if (skill.targeting === 'enemy') {
-    const target = enemies[0];
+    // Respecte la cible déjà choisie à l'attaque de base (voir orderAttack/updateCombat) --
+    // permet de viser la bombe volante de l'Artificier gobelin avec un sort, pas seulement
+    // l'ennemi principal (demande utilisateur explicite). Repli sur l'ennemi principal si rien
+    // n'a encore été ciblé manuellement, comme avant.
+    const target = character.attackTarget || enemies[0];
     if (!target || target.hp <= 0 || !isInRangeOf(character, target)) return false;
     skill.cast(character, target);
   } else {
@@ -2507,6 +2531,22 @@ function drawFlyingBomb(bomb) {
   ctx.fillText('💣', bomb.x, bomb.y);
 
   drawEnemyHealthBar(bomb);
+}
+
+// Zone de proximité de l'Artificier gobelin (voir updateFlyingBombAttack, demande utilisateur
+// explicite : "zone à tracer autour de lui") -- affichée en permanence pendant le combat (pas
+// seulement au moment du décompte) pour que le joueur puisse anticiper et s'en écarter avant le
+// palier des 4s. Distincte visuellement des zones de dégâts des bombes (bleu, pas rouge : ce n'est
+// pas une zone qui blesse, juste une zone qui ralentit le prochain tir).
+function drawArtificierProximityZone(enemy) {
+  ctx.save();
+  ctx.setLineDash([8, 6]);
+  ctx.strokeStyle = 'rgba(79, 195, 247, 0.5)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(enemy.x, enemy.y, ARTIFICIER_PROXIMITY_RADIUS, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
 }
 
 function drawCharacter(character) {
@@ -3701,7 +3741,9 @@ function resetTransientCombatState(entity) {
   entity.nextBombAt = 0;
   entity.bombDashTarget = null;
   entity.bombDashUntil = 0;
+  entity.nextBombCheckAt = 0;
   entity.nextFlyingBombAt = 0;
+  entity.flyingBombCounted = false;
 }
 
 // Remet les personnages sélectionnés en place au début d'un combat (PV/mana pleins, plus d'effets
@@ -4316,6 +4358,9 @@ function draw() {
   hoverRects = [];
 
   if (currentScene === 'combat') {
+    for (const enemy of enemies) {
+      if (enemy.flyingBombAttack) drawArtificierProximityZone(enemy);
+    }
     for (const bomb of activeBombs) drawBomb(bomb, performance.now());
     for (const character of characters) drawCharacter(character);
     for (const character of characters) {
