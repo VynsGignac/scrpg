@@ -71,7 +71,7 @@ const FIRST_NAMES = [
 // personnages du groupe tirent leur classe au hasard parmi elles toutes.
 const CHARACTER_CLASSES = [
   'Guerrier', 'Barbare', 'Paladin', 'Voleur', 'Mage', 'Pyromane',
-  'Chasseur', 'Druide', 'Prêtre', 'Sorcier', 'Chaman',
+  'Chasseur', 'Druide', 'Prêtre', 'Sorcier', 'Chaman', 'Gardien',
 ];
 
 // Couleur de chaque classe (demande utilisateur explicite) -- le carré du personnage prend
@@ -90,6 +90,7 @@ const CLASS_COLORS = {
   'Prêtre': '#f5f5f5',
   Sorcier: '#3a3a3a',
   Chaman: '#ec407a',
+  Gardien: '#546e7a',
 };
 
 const SKILL_MAX = 10;
@@ -133,6 +134,11 @@ const CLASS_STATS = {
   Druide: { force: 0, agilite: 2, endurance: 6, intelligence: 14, savoir: 18 },
   'Prêtre': { force: 0, agilite: 0, endurance: 6, intelligence: 10, savoir: 24 },
   Sorcier: { force: 0, agilite: 6, endurance: 6, intelligence: 28, savoir: 0 },
+  // Gardien : tank pur basé sur la mitigation active (Rempart) plutôt que sur les PV bruts (même
+  // Endurance que les autres mêlées) -- pas de Savoir, il ne soigne jamais, seulement lui-même
+  // grâce à sa réduction de dégâts. Agilité un peu plus haute que la moyenne (double couche de
+  // survie : esquive/crit en plus de la mitigation active).
+  Gardien: { force: 16, agilite: 16, endurance: 8, intelligence: 0, savoir: 0 },
 };
 
 function statsForClass(className) {
@@ -292,6 +298,7 @@ const CLASS_COMBAT = {
   'Prêtre': { melee: false, stat: 'intelligence' },
   Sorcier: { melee: false, stat: 'intelligence' },
   Chaman: { melee: true, stat: 'intelligence' }, // magie au corps à corps
+  Gardien: { melee: true, stat: 'force' },
 };
 const DEFAULT_COMBAT = { melee: true, stat: 'force' };
 // Portée par défaut des classes à distance -- certaines classes ont leur propre valeur (voir
@@ -806,6 +813,21 @@ function updatePyroBurn(character, now) {
     const total = character.pyroBurnDamagePerTick * character.pyroBurnStacks;
     dealDamage(character, total, '255, 87, 34', character.pyroBurnSource, false, 'Brûlure');
     character.pyroBurnNextTickAt = now + PYRO_BURN_TICK_MS;
+  }
+}
+
+// Rempart du Gardien (character.rempartStacks) : purement passif une fois posé -- la réduction de
+// dégâts elle-même est gérée par le mécanisme générique déjà en place dans dealDamage
+// (damageReductionFactor/damageReductionUntil), pas besoin d'y ticker quoi que ce soit. Seul le
+// COMPTEUR de stacks doit être remis à 0 une fois expiré (sinon un Rempart relancé après une trop
+// longue pause repartirait à tort du dernier compte au lieu de 1, voir applyRempartStack/rempart).
+const GARDIEN_REMPART_MAX_STACKS = 5;
+const GARDIEN_REMPART_DURATION_MS = 22000; // > SKILL_COOLDOWN_MS (20000) : survit à un cycle complet si entretenu
+const GARDIEN_REMPART_REDUCTION_PER_STACK = 0.05; // 5%/stack, jusqu'à -25% à 5 stacks
+
+function updateRempartStacks(character, now) {
+  if (character.rempartStacks && now >= (character.rempartExpiresAt || 0)) {
+    character.rempartStacks = 0;
   }
 }
 
@@ -1506,6 +1528,57 @@ const SKILLS = {
       }
     },
   },
+
+  // ============================== GARDIEN (Force, mêlée) ==============================
+  // Tank pur (demande utilisateur explicite) : Rempart (character.rempartStacks, 0-5) se pose et
+  // se rafraîchit à chaque lancer -- l'entretenir en boucle le maintient à son plafond en continu,
+  // même logique que la brûlure du Pyromane (voir GARDIEN_REMPART_DURATION_MS, plus long que
+  // SKILL_COOLDOWN_MS pour survivre à un cycle complet). Représailles transforme ces stacks en
+  // dégâts réels ; Cri de défi est le taunt de zone demandé.
+  coupDeBouclier: {
+    id: 'coupDeBouclier', name: 'Coup de bouclier', shortLabel: 'Coup de\nbouclier', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: "70% Force. Génère une menace bonus (le double des dégâts infligés).",
+    cast(character, target) {
+      const { amount, crit } = computeStatDamage(character, 'force', 0.7);
+      if (dealDamage(target, amount, '84, 110, 122', character, crit, 'Coup de bouclier')) {
+        addThreat(character, amount, performance.now()); // menace doublée : dégâts + ce bonus
+      }
+    },
+  },
+  rempart: {
+    id: 'rempart', name: 'Rempart', shortLabel: 'Rempart', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    description: "Pose 1 stack de réduction de dégâts (jusqu'à 5, 5%/stack, jusqu'à -25%). Rafraîchit la durée à chaque lancer.",
+    cast(character) {
+      const now = performance.now();
+      character.rempartStacks = Math.min(GARDIEN_REMPART_MAX_STACKS, (character.rempartStacks || 0) + 1);
+      character.rempartExpiresAt = now + GARDIEN_REMPART_DURATION_MS;
+      character.damageReductionFactor = character.rempartStacks * GARDIEN_REMPART_REDUCTION_PER_STACK;
+      character.damageReductionUntil = character.rempartExpiresAt;
+    },
+  },
+  criDeDefi: {
+    id: 'criDeDefi', name: 'Cri de défi', shortLabel: 'Cri de\ndéfi', targeting: 'self', cooldownMs: SKILL_COOLDOWN_MS,
+    description: 'Provoque tous les ennemis proches pendant 4s, avec une grosse menace sur chacun.',
+    cast(character) {
+      const now = performance.now();
+      for (const enemy of enemies) {
+        if (enemy.hp <= 0) continue;
+        if (Math.hypot(enemy.x - character.x, enemy.y - character.y) > ZONE_RADIUS) continue;
+        enemy.tauntedBy = character;
+        enemy.tauntUntil = now + 4000;
+        addThreat(character, 100, now);
+      }
+    },
+  },
+  represailles: {
+    id: 'represailles', name: 'Représailles', shortLabel: 'Représ-\nailles', targeting: 'enemy', cooldownMs: SKILL_COOLDOWN_MS,
+    description: "60% Force + 10% par stack de Rempart actif (jusqu'à +50% à 5 stacks).",
+    cast(character, target) {
+      const stacks = character.rempartStacks || 0;
+      const { amount, crit } = computeStatDamage(character, 'force', 0.6 + stacks * 0.1);
+      dealDamage(target, amount, '84, 110, 122', character, crit, 'Représailles');
+    },
+  },
 };
 
 const CLASS_SKILLS = {
@@ -1520,6 +1593,7 @@ const CLASS_SKILLS = {
   'Prêtre': ['motDeDouleur', 'cercleSacre', 'voileProtecteur', 'soinMajeur'],
   Sorcier: ['drainDeVie', 'epidemie', 'pacteDeProtection', 'malediction'],
   Chaman: ['frappeDesEsprits', 'chaineDEclairs', 'boucliersDesAncetres', 'totem'],
+  Gardien: ['coupDeBouclier', 'rempart', 'criDeDefi', 'represailles'],
 };
 
 // Même critère de "à portée" que l'attaque de base (voir updateCombat) : corps à corps = juste à
@@ -3098,12 +3172,22 @@ function resetTransientCombatState(entity) {
   entity.pyroBurnExpiresAt = 0;
   entity.pyroBurnNextTickAt = 0;
   entity.priestGraceStacks = 0;
+  entity.rempartStacks = 0;
+  entity.rempartExpiresAt = 0;
 }
 
 // Remet les 4 personnages en place au début d'un combat (PV/mana pleins, plus d'effets ni de
 // menace résiduels...) -- commun à un donjon normal (resetCombatEncounter) et à l'entraînement
 // (enterTrainingCombat), seule la configuration de l'ennemi diffère entre les deux.
-function resetPlayerCombatState() {
+// onlySelected (entraînement uniquement, demande utilisateur explicite) : si le roster n'a QUE
+// certains personnages sélectionnés (moins que PARTY_SIZE), applyActivePartyToCombatSlots comble
+// quand même les emplacements restants par défaut (roster[slot]) -- pour l'entraînement, ces
+// emplacements de complément ne doivent PAS se battre à la place du joueur. On les neutralise en
+// les mettant à 0 PV, exactement comme un personnage mort (déjà ignoré partout : IA, ciblage,
+// déplacement, attaque de base... voir les gardes "hp <= 0" déjà en place), plutôt que d'introduire
+// un nouveau cas particulier. Un donjon normal (onlySelected absent/false) garde le comportement
+// habituel : toujours 4 combattants.
+function resetPlayerCombatState(onlySelected) {
   // Rebranche le groupe actif (voir scène Guilde) sur les 4 emplacements de combat : une
   // composition changée depuis la dernière bataille ne prend effet qu'à partir d'ici.
   applyActivePartyToCombatSlots();
@@ -3125,6 +3209,7 @@ function resetPlayerCombatState() {
     resetTransientCombatState(character);
     character.x = squareXs[i];
     character.y = cy;
+    if (onlySelected && i >= activePartyIndices.length) character.hp = 0;
     i += 1;
   }
 }
@@ -3195,7 +3280,7 @@ function enterTrainingCombat() {
     enemy.y = spawn.y;
   }
 
-  resetPlayerCombatState();
+  resetPlayerCombatState(true);
   combatStats = createCombatStats();
   currentScene = 'combat';
 }
@@ -3586,6 +3671,7 @@ function loop(now) {
     updateCombat(character, now);
     updateDotEffects(character, now);
     updatePyroBurn(character, now);
+    updateRempartStacks(character, now);
     updateShield(character, now);
     updateManaRegen(character, dt);
   }
