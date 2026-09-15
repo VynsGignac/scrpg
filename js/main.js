@@ -482,6 +482,10 @@ const BOMB_INTERVAL_MS = 10000;
 const BOMB_FUSE_MS = 5000;
 const BOMB_RADIUS = 70;
 const BOMB_DAMAGE = 50;
+// Bleu (demande utilisateur explicite) -- distinct du vert du Gobelin et du gris de l'Archer
+// gobelin, partagé par toutes les bombes (au sol et volante) pour rester cohérent.
+const BOMB_COLOR_RGB = '33, 150, 243';
+const BOMB_ACCENT_RGB = '129, 212, 250'; // anneau de mèche/traînée, plus clair pour rester lisible
 // x2 la vitesse de base actuelle (0.045, voir PIXELS_PER_MS) = 0.09, la valeur de vitesse d'avant
 // le ralentissement global 2x (demande utilisateur explicite : "2 fois plus vite, valeur précédente").
 const BOMB_DASH_SPEED_MULTIPLIER = 2;
@@ -500,7 +504,7 @@ function updateBombs(now) {
     for (const character of characters) {
       if (!character.playerControlled || character.hp <= 0) continue;
       if (Math.hypot(character.x - bomb.x, character.y - bomb.y) <= BOMB_RADIUS) {
-        dealDamage(character, BOMB_DAMAGE, '255, 111, 0', bomb.source, false, 'Bombe');
+        dealDamage(character, BOMB_DAMAGE, BOMB_COLOR_RGB, bomb.source, false, 'Bombe');
       }
     }
   }
@@ -640,7 +644,7 @@ function updateFlyingBombs(dt, now) {
       bomb.explodedAt = now;
       for (const character of characters) {
         if (!character.playerControlled || character.hp <= 0) continue;
-        dealDamage(character, FLYING_BOMB_DAMAGE, '255, 111, 0', bomb.source, false, 'Bombe volante');
+        dealDamage(character, FLYING_BOMB_DAMAGE, BOMB_COLOR_RGB, bomb.source, false, 'Bombe volante');
       }
     }
   }
@@ -2492,15 +2496,15 @@ function drawBomb(bomb, now) {
   ctx.save();
   ctx.beginPath();
   ctx.arc(bomb.x, bomb.y, BOMB_RADIUS, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(255, 87, 34, 0.14)';
+  ctx.fillStyle = `rgba(${BOMB_COLOR_RGB}, 0.14)`;
   ctx.fill();
-  ctx.strokeStyle = 'rgba(255, 87, 34, 0.7)';
+  ctx.strokeStyle = `rgba(${BOMB_COLOR_RGB}, 0.7)`;
   ctx.lineWidth = 2;
   ctx.stroke();
 
   ctx.beginPath();
   ctx.arc(bomb.x, bomb.y, BOMB_RADIUS * (1 - progress), 0, Math.PI * 2);
-  ctx.strokeStyle = 'rgba(255, 213, 79, 0.9)';
+  ctx.strokeStyle = `rgba(${BOMB_ACCENT_RGB}, 0.9)`;
   ctx.lineWidth = 3;
   ctx.stroke();
   ctx.restore();
@@ -2517,7 +2521,7 @@ function drawBomb(bomb, now) {
 // attaquable/destructible en vol.
 function drawFlyingBomb(bomb) {
   ctx.save();
-  ctx.strokeStyle = 'rgba(255, 87, 34, 0.55)';
+  ctx.strokeStyle = `rgba(${BOMB_COLOR_RGB}, 0.55)`;
   ctx.lineWidth = 3;
   ctx.beginPath();
   ctx.moveTo(bomb.x - bomb.vx * 28, bomb.y - bomb.vy * 28);
