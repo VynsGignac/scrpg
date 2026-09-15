@@ -1055,8 +1055,10 @@ function drawProjectiles(now) {
 
 // ------------------------------------------------------------
 // Statistiques du combat en cours (voir écran de fin, drawCombatEndScreen) : dégâts infligés et
-// subis par personnage, ventilés par compétence (ou "Attaque de base") et par ennemi. Remis à
-// zéro à chaque nouveau combat (voir resetCombatEncounter).
+// subis par personnage, ventilés par compétence (ou "Attaque de base") et par ennemi, ainsi que
+// les soins prodigués, ventilés par compétence (demande utilisateur explicite -- pas de notion
+// d'"ennemi" pour un soin, donc pas de byEnemy ici). Remis à zéro à chaque nouveau combat (voir
+// resetCombatEncounter).
 // ------------------------------------------------------------
 function createCombatStats() {
   const stats = {};
@@ -1065,6 +1067,7 @@ function createCombatStats() {
     stats[character.index] = {
       dealt: { total: 0, bySkill: {}, byEnemy: {} },
       taken: { total: 0, bySkill: {}, byEnemy: {} },
+      healed: { total: 0, bySkill: {} },
     };
   }
   return stats;
@@ -1077,6 +1080,14 @@ function recordDamageStat(characterIndex, kind, amount, skillLabel, enemyLabel) 
   entry.total += amount;
   entry.bySkill[skill] = (entry.bySkill[skill] || 0) + amount;
   entry.byEnemy[enemyLabel] = (entry.byEnemy[enemyLabel] || 0) + amount;
+}
+
+function recordHealStat(characterIndex, amount, skillLabel) {
+  const entry = combatStats[characterIndex] && combatStats[characterIndex].healed;
+  if (!entry) return;
+  const skill = skillLabel || 'Soin de base';
+  entry.total += amount;
+  entry.bySkill[skill] = (entry.bySkill[skill] || 0) + amount;
 }
 
 // Inflige des dégâts à "target" en consommant d'abord son éventuel bouclier (voir Mur sacré),
@@ -1223,12 +1234,17 @@ function computeHybridStatDamage(character, primaryKey, primaryPercent, secondar
 }
 
 // Soigner génère de la menace pour le soigneur, au même titre que les dégâts (demande
-// utilisateur explicite) -- y compris en se soignant soi-même (source === target).
-function healCharacter(target, amount, source) {
+// utilisateur explicite) -- y compris en se soignant soi-même (source === target). "skillLabel"
+// (nom du sort) sert au résumé de fin de combat (voir recordHealStat/drawCombatEndScreen), comme
+// skillLabel dans dealDamage.
+function healCharacter(target, amount, source, skillLabel) {
   target.hp = Math.min(target.hpMax, target.hp + amount);
   spawnFloatingText(target.x + (Math.random() - 0.5) * 24, target.y - target.size / 2 - 34, `+${amount}`, '129, 199, 132');
   spawnSkillEffect(target.x, target.y, target.size, '129, 199, 132');
-  if (source && source.playerControlled) addOwnActionThreat(source, amount, performance.now());
+  if (source && source.playerControlled) {
+    addOwnActionThreat(source, amount, performance.now());
+    recordHealStat(source.index, amount, skillLabel);
+  }
 }
 
 // Effet à tick (brûlure/saignement) : inflige damagePerTick toutes les tickIntervalMs, ticksLeft
@@ -1445,7 +1461,7 @@ const SKILLS = {
     cast(character) {
       character.damageReductionFactor = 0.3;
       character.damageReductionUntil = performance.now() + 5000;
-      healCharacter(character, Math.round(character.hpMax * 0.05), character); // ne compense plus qu'une partie des PV sacrifiés
+      healCharacter(character, Math.round(character.hpMax * 0.05), character, 'Peau de pierre'); // ne compense plus qu'une partie des PV sacrifiés
     },
   },
   frenesie: {
@@ -1482,7 +1498,7 @@ const SKILLS = {
         const { amount, crit } = computeStatDamage(character, 'force', 0.5);
         if (dealDamage(enemy, amount, '255, 193, 7', character, crit, 'Vague sacrée')) totalDealt += amount;
       }
-      if (totalDealt > 0) healCharacter(character, Math.round(totalDealt * 0.4), character);
+      if (totalDealt > 0) healCharacter(character, Math.round(totalDealt * 0.4), character, 'Vague sacrée');
     },
   },
   // Rôle hybride tank/heal secondaire (demande utilisateur explicite) : Mur sacré renforcé (plus
@@ -1514,7 +1530,7 @@ const SKILLS = {
       // Soin hybride Savoir + Intelligence (demande utilisateur explicite) : ~70/30, total proche
       // de l'ancienne version 100% Savoir pour un soigneur typique.
       const heal = 10 + Math.round(character.stats.savoir * 0.28 + character.stats.intelligence * 0.12);
-      healCharacter(lowestHpAlly() || character, heal, character);
+      healCharacter(lowestHpAlly() || character, heal, character, 'Lumière divine');
     },
   },
 
@@ -1791,7 +1807,7 @@ const SKILLS = {
       }
       if (stacksConsumed > 0) {
         const heal = stacksConsumed * 2 * Math.round(character.stats.savoir * 0.14 + character.stats.intelligence * 0.06);
-        healCharacter(lowestHpAlly() || character, heal, character);
+        healCharacter(lowestHpAlly() || character, heal, character, 'Épines empoisonnées');
       }
     },
   },
@@ -1804,7 +1820,7 @@ const SKILLS = {
       target.shieldHp = shield;
       target.shieldMax = shield;
       target.shieldExpiresAt = performance.now() + 6000;
-      healCharacter(target, Math.round(character.stats.savoir * 0.21 + character.stats.intelligence * 0.09), character);
+      healCharacter(target, Math.round(character.stats.savoir * 0.21 + character.stats.intelligence * 0.09), character, "Carapace d'écorce");
     },
   },
   chantDeLaForet: {
@@ -1813,7 +1829,7 @@ const SKILLS = {
     cast(character) {
       const heal = Math.round(character.stats.savoir * 0.28 + character.stats.intelligence * 0.12);
       for (const c of characters) {
-        if (c.playerControlled && c.hp > 0) healCharacter(c, heal, character);
+        if (c.playerControlled && c.hp > 0) healCharacter(c, heal, character, 'Chant de la forêt');
       }
     },
   },
@@ -1838,7 +1854,7 @@ const SKILLS = {
         const manaRestore = Math.round(character.stats.savoir * 0.2);
         for (const c of characters) {
           if (!c.playerControlled || c.hp <= 0) continue;
-          healCharacter(c, heal, character);
+          healCharacter(c, heal, character, 'Mot de douleur');
           if (manaRestore > 0) c.mana = Math.min(c.manaMax, c.mana + manaRestore);
         }
       }
@@ -1886,7 +1902,7 @@ const SKILLS = {
       // Soin hybride Savoir + Intelligence (demande utilisateur explicite, ~70/30).
       const power = character.stats.savoir * 0.7 + character.stats.intelligence * 0.3;
       const heal = Math.round(power * (recentlyHit ? 1.1 : 0.9));
-      healCharacter(target, heal, character);
+      healCharacter(target, heal, character, 'Soin majeur');
       // Pose un stack de Grâce (jusqu'à 5) consommé par le prochain Mot de douleur -- voir plus haut.
       character.priestGraceStacks = Math.min(5, (character.priestGraceStacks || 0) + 1);
     },
@@ -1903,7 +1919,7 @@ const SKILLS = {
     cast(character, target) {
       const { amount, crit } = computeStatDamage(character, 'intelligence', 0.5);
       if (dealDamage(target, amount, '81, 45, 168', character, crit, 'Drain de vie')) {
-        healCharacter(character, Math.round(amount * 0.5), character);
+        healCharacter(character, Math.round(amount * 0.5), character, 'Drain de vie');
       }
     },
   },
@@ -2001,7 +2017,7 @@ const SKILLS = {
       character.shieldMax = shield;
       character.shieldExpiresAt = performance.now() + 6000;
       // Soin hybride Savoir + Intelligence (demande utilisateur explicite, ~70/30).
-      healCharacter(character, Math.round(character.stats.savoir * 0.14 + character.stats.intelligence * 0.06), character);
+      healCharacter(character, Math.round(character.stats.savoir * 0.14 + character.stats.intelligence * 0.06), character, 'Bouclier des ancêtres');
     },
   },
   totem: {
@@ -2021,7 +2037,7 @@ const SKILLS = {
       for (const c of characters) {
         if (!c.playerControlled || c.hp <= 0) continue;
         if (Math.hypot(c.x - character.x, c.y - character.y) > ZONE_RADIUS) continue;
-        healCharacter(c, heal, character);
+        healCharacter(c, heal, character, 'Totem');
         c.damageOutputMultiplier = 1.2;
         c.damageOutputUntil = now + 8000;
       }
@@ -3144,7 +3160,7 @@ function drawCombatEndScreen(now) {
   // applyActivePartyToCombatSlots) -- qu'il y en ait 1 ou PARTY_SIZE, tous y figurent, sans
   // emplacement de complément à exclure.
   for (const character of characters.filter((c) => c.playerControlled)) {
-    const stats = combatStats[character.index] || { dealt: { total: 0, bySkill: {}, byEnemy: {} }, taken: { total: 0, bySkill: {}, byEnemy: {} } };
+    const stats = combatStats[character.index] || { dealt: { total: 0, bySkill: {}, byEnemy: {} }, taken: { total: 0, bySkill: {}, byEnemy: {} }, healed: { total: 0, bySkill: {} } };
     const expanded = expandedStatsCharacter === character;
 
     ctx.fillStyle = '#ffffff0d';
@@ -3164,7 +3180,7 @@ function drawCombatEndScreen(now) {
 
     ctx.font = '11px sans-serif';
     ctx.fillStyle = '#ffffffbb';
-    ctx.fillText(`Infligé ${stats.dealt.total}   Subi ${stats.taken.total}`, cardX + 32, y + 33);
+    ctx.fillText(`Infligé ${stats.dealt.total}   Subi ${stats.taken.total}   Soigné ${stats.healed.total}`, cardX + 32, y + 33);
 
     ctx.textAlign = 'right';
     ctx.font = 'bold 12px sans-serif';
@@ -3186,8 +3202,11 @@ function drawCombatEndScreen(now) {
       // jusqu'ici (demande utilisateur explicite : distinguer les dégâts subis par type, ex.
       // attaque du Gobelin vs sa bombe, pas seulement par ennemi source).
       const takenBySkill = Object.entries(stats.taken.bySkill).sort((a, b) => b[1] - a[1]);
-      const lineCount = Math.max(dealtSkills.length, 1) + Math.max(takenByEnemy.length, 1) + Math.max(takenBySkill.length, 1);
-      const detailHeight = 60 + lineCount * 16 + 8; // 3 en-têtes de section (~18 chacun) + marges
+      // Soins prodigués (demande utilisateur explicite), ventilés par compétence -- pas de
+      // pendant "par ennemi", un soin ne vise jamais un ennemi (voir recordHealStat).
+      const healedSkills = Object.entries(stats.healed.bySkill).sort((a, b) => b[1] - a[1]);
+      const lineCount = Math.max(dealtSkills.length, 1) + Math.max(takenByEnemy.length, 1) + Math.max(takenBySkill.length, 1) + Math.max(healedSkills.length, 1);
+      const detailHeight = 78 + lineCount * 16 + 8; // 4 en-têtes de section (~18 chacun) + marges
 
       ctx.fillStyle = '#ffffff08';
       ctx.fillRect(cardX, y, cardWidth, detailHeight);
@@ -3234,6 +3253,21 @@ function drawCombatEndScreen(now) {
         dy += 16;
       } else {
         for (const [label, amount] of takenBySkill) {
+          drawStatLine(cardX + 20, dy, cardWidth - 36, label, amount);
+          dy += 16;
+        }
+      }
+
+      dy += 6;
+      ctx.font = 'bold 11px sans-serif';
+      ctx.fillStyle = '#ffffff99';
+      ctx.fillText('Soignés par compétence', cardX + 16, dy + 8);
+      dy += 18;
+      if (healedSkills.length === 0) {
+        drawStatLine(cardX + 20, dy, cardWidth - 36, 'Aucun', 0);
+        dy += 16;
+      } else {
+        for (const [label, amount] of healedSkills) {
           drawStatLine(cardX + 20, dy, cardWidth - 36, label, amount);
           dy += 16;
         }
@@ -4222,7 +4256,10 @@ function enterTrainingCombat() {
     enemy.stationary = false;
     enemy.flyingBombAttack = false;
     resetTransientCombatState(enemy);
-    const spawn = clampPointToField({ size: enemy.size }, cx, cy - 220);
+    // Plus bas que l'ennemi habituel (voir resetCombatEncounter) : au niveau du premier tiers de
+    // la zone de jeu visible, sous le bandeau du haut (demande utilisateur explicite).
+    const dummyY = TOP_BANNER_HEIGHT + (canvas.height - TOP_BANNER_HEIGHT) / 3;
+    const spawn = clampPointToField({ size: enemy.size }, cx, dummyY);
     enemy.x = spawn.x;
     enemy.y = spawn.y;
   }
