@@ -2728,8 +2728,13 @@ function drawCombatEndScreen(now) {
     if (expanded) {
       const dealtSkills = Object.entries(stats.dealt.bySkill).sort((a, b) => b[1] - a[1]);
       const takenByEnemy = Object.entries(stats.taken.byEnemy).sort((a, b) => b[1] - a[1]);
-      const lineCount = Math.max(dealtSkills.length, 1) + Math.max(takenByEnemy.length, 1);
-      const detailHeight = 36 + lineCount * 16 + 8;
+      // Déjà suivi par recordDamageStat (skillLabel vaut "Attaque de base" par défaut, ou le nom
+      // du sort/de l'effet -- "Bombe" pour le Gobelin, voir updateBombs) mais jamais affiché
+      // jusqu'ici (demande utilisateur explicite : distinguer les dégâts subis par type, ex.
+      // attaque du Gobelin vs sa bombe, pas seulement par ennemi source).
+      const takenBySkill = Object.entries(stats.taken.bySkill).sort((a, b) => b[1] - a[1]);
+      const lineCount = Math.max(dealtSkills.length, 1) + Math.max(takenByEnemy.length, 1) + Math.max(takenBySkill.length, 1);
+      const detailHeight = 60 + lineCount * 16 + 8; // 3 en-têtes de section (~18 chacun) + marges
 
       ctx.fillStyle = '#ffffff08';
       ctx.fillRect(cardX, y, cardWidth, detailHeight);
@@ -2761,6 +2766,21 @@ function drawCombatEndScreen(now) {
         dy += 16;
       } else {
         for (const [label, amount] of takenByEnemy) {
+          drawStatLine(cardX + 20, dy, cardWidth - 36, label, amount);
+          dy += 16;
+        }
+      }
+
+      dy += 6;
+      ctx.font = 'bold 11px sans-serif';
+      ctx.fillStyle = '#ffffff99';
+      ctx.fillText('Subis par type', cardX + 16, dy + 8);
+      dy += 18;
+      if (takenBySkill.length === 0) {
+        drawStatLine(cardX + 20, dy, cardWidth - 36, 'Aucun', 0);
+        dy += 16;
+      } else {
+        for (const [label, amount] of takenBySkill) {
           drawStatLine(cardX + 20, dy, cardWidth - 36, label, amount);
           dy += 16;
         }
