@@ -2658,6 +2658,23 @@ function drawCombatEndScreen(now) {
   const buttonWidth = (cardWidth - 12) / 2;
   const buttonHeight = 44;
 
+  // "Continuer" (entraînement uniquement, demande utilisateur explicite) : reprend le combat en
+  // pause exactement là où il en était, sans rien réinitialiser -- contrairement à "Rejouer" qui
+  // relance une session neuve. N'a pas de sens pour un vrai donjon déjà gagné/perdu.
+  if (isTrainingCombat) {
+    ctx.fillStyle = '#1565c0';
+    ctx.fillRect(cardX, y, cardWidth, buttonHeight);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 14px sans-serif';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('Continuer', cardX + cardWidth / 2, y + buttonHeight / 2 + 1);
+    registerHitRect(cardX, y, cardWidth, buttonHeight, () => {
+      combatPhase = 'active';
+    });
+    y += buttonHeight + 8;
+  }
+
   ctx.fillStyle = '#2e7d32';
   ctx.fillRect(cardX, y, buttonWidth, buttonHeight);
   ctx.textAlign = 'center';
@@ -3909,24 +3926,33 @@ function loop(now) {
   const dt = Math.min(now - lastFrameTime, 100);
   lastFrameTime = now;
 
-  if (combatPhase === 'countdown' && now >= pullCountdownEndAt) {
-    combatPhase = 'active';
-    combatActiveStartAt = now;
-  }
+  // Écran de fin affiché (voir drawCombatEndScreen) : plus aucune simulation tant qu'on reste
+  // dessus -- sinon, en entraînement, le mannequin continue d'encaisser des coups après "Quitter"
+  // (demande utilisateur explicite : "il faudrait que le combat se mette en pause"), et chaque
+  // coup relance combatPhase sur 'active' (voir dealDamage), faisant disparaître le résumé presque
+  // aussitôt affiché. "Continuer" (voir drawCombatEndScreen) repasse juste combatPhase à 'active'
+  // pour reprendre exactement là où on s'était arrêté (PV/mana/cooldowns intacts).
+  const combatPaused = combatPhase === 'victory' || combatPhase === 'defeat';
+  if (!combatPaused) {
+    if (combatPhase === 'countdown' && now >= pullCountdownEndAt) {
+      combatPhase = 'active';
+      combatActiveStartAt = now;
+    }
 
-  for (const enemy of enemies) updateEnemyAI(enemy, now);
-  for (const character of characters) {
-    if (character.playerControlled) updateAutoPlay(character);
-  }
-  for (const character of characters) updateMove(character, dt);
-  resolveOverlaps();
-  for (const character of characters) {
-    updateCombat(character, now);
-    updateDotEffects(character, now);
-    updatePyroBurn(character, now);
-    updateRempartStacks(character, now);
-    updateShield(character, now);
-    updateManaRegen(character, dt);
+    for (const enemy of enemies) updateEnemyAI(enemy, now);
+    for (const character of characters) {
+      if (character.playerControlled) updateAutoPlay(character);
+    }
+    for (const character of characters) updateMove(character, dt);
+    resolveOverlaps();
+    for (const character of characters) {
+      updateCombat(character, now);
+      updateDotEffects(character, now);
+      updatePyroBurn(character, now);
+      updateRempartStacks(character, now);
+      updateShield(character, now);
+      updateManaRegen(character, dt);
+    }
   }
   updateFloatingTexts(now);
   updateSkillEffects(now);
