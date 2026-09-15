@@ -247,11 +247,14 @@ applyActivePartyToCombatSlots();
 // Tailles à 75% de leur valeur d'origine (44/52/64/50/76, demande utilisateur explicite).
 // bombAttack (voir updateBombAttack) : 'noAggroPlayer' fonce poser 1 bombe sous un joueur sans
 // aggro (Gobelin), 'random' tire un nombre de bombes à des points aléatoires de la map sans se
-// déplacer (Archer gobelin) -- toutes les 10s (BOMB_INTERVAL_MS) dans les deux cas.
+// déplacer (Archer gobelin) -- toutes les 10s (BOMB_INTERVAL_MS) dans les deux cas. stationary
+// (Artificier gobelin) : ne s'approche jamais de personne (voir updateEnemyAI), attaque quand
+// même au corps à corps si un joueur vient à lui. flyingBombAttack : lâche en plus une bombe
+// volante (voir launchFlyingBomb) toutes les FLYING_BOMB_INTERVAL_MS.
 const ENCOUNTERS = [
   { name: 'Gobelin', label: 'G', color: '#8bc34a', size: 33, hpMax: 1500, statValue: 10, combat: { melee: true, stat: 'force' }, bombAttack: { targeting: 'noAggroPlayer', count: 1 } },
   { name: 'Archer gobelin', label: 'A', color: '#cfd8dc', size: 39, hpMax: 400, statValue: 16, combat: { melee: false, stat: 'force' }, bombAttack: { targeting: 'random', count: 3 } },
-  { name: 'Brute orque', label: 'O', color: '#795548', size: 48, hpMax: 800, statValue: 26, combat: { melee: true, stat: 'force' } },
+  { name: 'Artificier gobelin', label: 'Ar', color: '#f4511e', size: 48, hpMax: 800, statValue: 26, combat: { melee: true, stat: 'force' }, stationary: true, flyingBombAttack: true },
   { name: 'Sorcière', label: 'S', color: '#ab47bc', size: 38, hpMax: 600, statValue: 22, combat: { melee: false, stat: 'force' } },
   { name: 'Seigneur des ombres', label: 'B', color: '#c62828', size: 57, hpMax: 5000, statValue: 30, combat: { melee: true, stat: 'force' }, isBoss: true },
 ];
@@ -372,8 +375,14 @@ function combatProfile(character) {
   return character.combatOverride || CLASS_COMBAT[character.className] || DEFAULT_COMBAT;
 }
 
+// La bombe volante de l'Artificier gobelin (voir launchFlyingBomb) est attaquable comme un ennemi
+// -- pas dans le tableau enemies (elle n'a pas d'IA, juste une trajectoire, voir
+// updateFlyingBombs), donc cherchée séparément ici plutôt que d'y être ajoutée (éviterait de la
+// faire remonter dans le ciblage automatique/les sorts, qui supposent tous un seul ennemi réel).
 function hitTestEnemyAt(x, y) {
-  return enemies.find((e) => e.hp > 0 && isInsideCharacter(e, x, y)) || null;
+  return enemies.find((e) => e.hp > 0 && isInsideCharacter(e, x, y))
+    || flyingBombs.find((b) => b.hp > 0 && !b.explodedAt && !b.destroyedAt && isInsideCharacter(b, x, y))
+    || null;
 }
 
 // Déplace "attacker" pour pouvoir attaquer "target" : corps à corps -- marche jusqu'au contact
@@ -557,6 +566,71 @@ function updateBombAttack(enemy, now) {
   else dashAndPlantBomb(enemy, now);
 }
 
+// ------------------------------------------------------------
+// Bombe volante de l'Artificier gobelin (voir ENCOUNTERS/flyingBombAttack, demande utilisateur
+// explicite) : distincte des bombes posées au sol (voir spawnBomb) -- celle-ci SE DÉPLACE, en
+// ligne droite depuis l'artificier vers un point aléatoire du bord bas de la map (l'angle n'est
+// donc pas forcément perpendiculaire, mais elle finit toujours par atteindre ce bord). 100 PV,
+// attaquable comme un ennemi (voir hitTestEnemyAt, étendu pour la trouver) : détruite en vol, elle
+// disparaît sans rien déclencher ; si elle atteint le bord bas, elle explose instantanément sur
+// TOUTE la map (pas de rayon, contrairement aux bombes au sol) pour FLYING_BOMB_DAMAGE à chaque
+// joueur vivant.
+// ------------------------------------------------------------
+const FLYING_BOMB_INTERVAL_MS = 15000;
+const FLYING_BOMB_HP = 100;
+const FLYING_BOMB_SPEED = 0.2; // px/ms
+const FLYING_BOMB_DAMAGE = 50;
+const FLYING_BOMB_SIZE = 26;
+let flyingBombs = [];
+let nextFlyingBombId = 1;
+
+function launchFlyingBomb(enemy) {
+  // Vise n'importe quel point du bord bas -- l'angle de tir est donc aléatoire, pas forcément
+  // perpendiculaire (demande utilisateur explicite), mais elle finit toujours sur ce bord.
+  const targetX = Math.random() * canvas.width;
+  const targetY = canvas.height;
+  const dist = Math.hypot(targetX - enemy.x, targetY - enemy.y) || 1;
+  flyingBombs.push({
+    id: nextFlyingBombId++,
+    x: enemy.x, y: enemy.y,
+    vx: (targetX - enemy.x) / dist, vy: (targetY - enemy.y) / dist,
+    hp: FLYING_BOMB_HP, hpMax: FLYING_BOMB_HP, size: FLYING_BOMB_SIZE,
+    playerControlled: false, name: 'Bombe volante', label: '💣',
+    source: enemy,
+  });
+}
+
+function updateFlyingBombAttack(enemy, now) {
+  if (!enemy.nextFlyingBombAt) enemy.nextFlyingBombAt = now + FLYING_BOMB_INTERVAL_MS;
+  if (now < enemy.nextFlyingBombAt) return;
+  enemy.nextFlyingBombAt = now + FLYING_BOMB_INTERVAL_MS;
+  launchFlyingBomb(enemy);
+}
+
+function updateFlyingBombs(dt, now) {
+  for (const bomb of flyingBombs) {
+    if (bomb.destroyedAt || bomb.explodedAt) continue;
+    if (bomb.hp <= 0) {
+      bomb.destroyedAt = now; // détruite en vol : rien ne se passe (demande utilisateur explicite)
+      continue;
+    }
+    bomb.x += bomb.vx * FLYING_BOMB_SPEED * dt;
+    bomb.y += bomb.vy * FLYING_BOMB_SPEED * dt;
+    if (bomb.y >= canvas.height) {
+      bomb.explodedAt = now;
+      for (const character of characters) {
+        if (!character.playerControlled || character.hp <= 0) continue;
+        dealDamage(character, FLYING_BOMB_DAMAGE, '255, 111, 0', bomb.source, false, 'Bombe volante');
+      }
+    }
+  }
+  flyingBombs = flyingBombs.filter((bomb) => {
+    if (bomb.destroyedAt) return false;
+    if (bomb.explodedAt) return now - bomb.explodedAt < 300; // court flash avant de disparaître
+    return true;
+  });
+}
+
 // IA d'un ennemi (voir ENCOUNTERS) : attaque le personnage qui a le plus de menace vis-à-vis de
 // lui (voir highestThreatPlayer) -- peut donc changer de cible en cours de combat si quelqu'un
 // d'autre prend l'aggro. Une provocation active (Fierté du juste) prend le pas sur la menace tant
@@ -586,6 +660,12 @@ function updateEnemyAI(enemy, now) {
   }
 
   if (enemy.bombAttack) updateBombAttack(enemy, now);
+  if (enemy.flyingBombAttack) updateFlyingBombAttack(enemy, now);
+
+  // Artificier gobelin (demande utilisateur explicite) : ne s'approche jamais de personne, mais
+  // continue d'attaquer au corps à corps si un joueur vient se mettre à portée (voir updateCombat,
+  // générique -- il suffit de ne jamais lancer approachForCombat pour lui).
+  if (enemy.stationary) return;
 
   const target = enemy.attackTarget;
   if (enemy.isMoving || isInRangeOf(enemy, target)) return;
@@ -2407,6 +2487,28 @@ function drawBomb(bomb, now) {
   ctx.fillText('💣', bomb.x, bomb.y);
 }
 
+// Bombe volante de l'Artificier gobelin (voir launchFlyingBomb/updateFlyingBombs) : icône +
+// traînée dans le sens du déplacement + barre de PV (réutilise drawEnemyHealthBar, compatible
+// puisque la bombe porte les mêmes champs x/y/size/hp/hpMax) pour montrer qu'elle est
+// attaquable/destructible en vol.
+function drawFlyingBomb(bomb) {
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255, 87, 34, 0.55)';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(bomb.x - bomb.vx * 28, bomb.y - bomb.vy * 28);
+  ctx.lineTo(bomb.x, bomb.y);
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = `${Math.round(bomb.size)}px sans-serif`;
+  ctx.fillText('💣', bomb.x, bomb.y);
+
+  drawEnemyHealthBar(bomb);
+}
+
 function drawCharacter(character) {
   const half = character.size / 2;
   if (character.selected) {
@@ -3599,6 +3701,7 @@ function resetTransientCombatState(entity) {
   entity.nextBombAt = 0;
   entity.bombDashTarget = null;
   entity.bombDashUntil = 0;
+  entity.nextFlyingBombAt = 0;
 }
 
 // Remet les personnages sélectionnés en place au début d'un combat (PV/mana pleins, plus d'effets
@@ -3647,12 +3750,15 @@ function resetCombatEncounter(levelIndex) {
     enemy.stats = { force: encounter.statValue };
     enemy.trainingDummy = false;
     enemy.bombAttack = encounter.bombAttack || null;
+    enemy.stationary = !!encounter.stationary;
+    enemy.flyingBombAttack = !!encounter.flyingBombAttack;
     resetTransientCombatState(enemy);
     const spawn = clampPointToField({ size: encounter.size }, cx, cy - 220);
     enemy.x = spawn.x;
     enemy.y = spawn.y;
   }
   activeBombs = [];
+  flyingBombs = [];
 
   resetPlayerCombatState();
 }
@@ -3696,12 +3802,15 @@ function enterTrainingCombat() {
     enemy.stats = { force: 0 };
     enemy.trainingDummy = true;
     enemy.bombAttack = null;
+    enemy.stationary = false;
+    enemy.flyingBombAttack = false;
     resetTransientCombatState(enemy);
     const spawn = clampPointToField({ size: enemy.size }, cx, cy - 220);
     enemy.x = spawn.x;
     enemy.y = spawn.y;
   }
   activeBombs = [];
+  flyingBombs = [];
 
   resetPlayerCombatState();
   combatStats = createCombatStats();
@@ -4213,6 +4322,7 @@ function draw() {
       if (character.playerControlled) drawCharacterBars(character);
     }
     for (const enemy of enemies) drawEnemyHealthBar(enemy);
+    for (const bomb of flyingBombs) drawFlyingBomb(bomb);
     for (const character of characters) {
       if (character.hp <= 0) continue; // rien à montrer sur un cadavre
       const bottomY = character.playerControlled
@@ -4344,6 +4454,7 @@ function loop(now) {
       updateManaRegen(character, dt);
     }
     updateBombs(now);
+    updateFlyingBombs(dt, now);
   }
   updateFloatingTexts(now);
   updateSkillEffects(now);
