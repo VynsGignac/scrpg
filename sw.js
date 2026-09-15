@@ -6,7 +6,7 @@
 // Ce numéro est généré automatiquement à chaque publication (voir publish-web.ps1, horodatage)
 // plutôt que changé à la main : un appareil ayant déjà installé la PWA ne récupère PAS
 // automatiquement les nouveaux fichiers tant que ce nom ne change pas.
-const CACHE_NAME = 'scrpg-20260915211801';
+const CACHE_NAME = 'scrpg-20260915212411';
 const ASSETS = [
   './',
   './index.html',
@@ -17,6 +17,9 @@ const ASSETS = [
   './icons/icon-512.png',
   './img/combat-bg.png',
   './img/guerrier.png',
+  './img/guerrier-dos.png',
+  './img/guerrier-cote.png',
+  './img/guerrier-attaque.png',
 ];
 
 self.addEventListener('install', (event) => {

@@ -54,11 +54,29 @@ function drawCombatBackground() {
 }
 
 // Sprites de classe (demande utilisateur explicite, image fournie par l'utilisateur -- fond noir
-// d'origine déjà rendu transparent) : table pour permettre d'en ajouter facilement d'autres plus
-// tard. Dessiné à la place du carré uni dans drawCharacter dès que prêt, sinon repli silencieux
-// sur le carré uni existant (comme pour combatBackgroundImage ci-dessus).
-const CLASS_SPRITES = { Guerrier: new Image() };
-CLASS_SPRITES.Guerrier.src = 'img/guerrier.png';
+// d'origine déjà rendu transparent) : plusieurs poses par classe pour refléter la direction de
+// déplacement/attaque (voir spriteForCharacter) -- pour l'instant seul le Guerrier en a. "cote"
+// (3/4) sert au déplacement latéral, "attaque" (profil) à l'attaque latérale ; "face"/"dos" n'ont
+// chacun qu'une seule pose (pas d'art séparé pour l'attaque de face/dos dans l'image fournie). Les
+// poses latérales ne font face qu'à gauche dans l'image d'origine -- réutilisées pour la droite en
+// les retournant à l'affichage (voir drawCharacter) plutôt que de dupliquer les fichiers.
+function loadSprite(src) {
+  const img = new Image();
+  img.src = src;
+  return img;
+}
+const CLASS_SPRITES = {
+  Guerrier: {
+    face: loadSprite('img/guerrier.png'),
+    dos: loadSprite('img/guerrier-dos.png'),
+    cote: loadSprite('img/guerrier-cote.png'),
+    attaque: loadSprite('img/guerrier-attaque.png'),
+  },
+};
+// 50% plus gros que l'emprise réelle du personnage (demande utilisateur explicite) -- seul
+// l'affichage grossit, tout le reste (barre de PV, badges, hit-box, déplacement...) reste basé sur
+// character.size, donc rien d'autre ne bouge.
+const SPRITE_SCALE = 1.5;
 
 // Bandeau de navigation en haut de l'écran, toujours visible quelle que soit la scène active :
 // un bouton par scène. "Combat" n'y figure plus (demande utilisateur explicite) : on y arrive
@@ -2679,6 +2697,34 @@ function drawArtificierProximityZone(enemy) {
   ctx.restore();
 }
 
+// Choisit la pose (voir CLASS_SPRITES) selon la direction de déplacement en priorité
+// (character.isMoving, vers le prochain point du chemin), sinon la direction vers sa cible
+// d'attaque si elle est à portée (donc réellement en train de se battre), sinon la pose de face
+// par défaut (demande utilisateur explicite : "en fonction de la direction où se déplace ou bien
+// attaque"). "flip" indique un retournement horizontal (poses latérales orientées à gauche dans
+// l'image d'origine, réutilisées pour la droite).
+function spriteForCharacter(character) {
+  const sprites = CLASS_SPRITES[character.className];
+  if (!sprites) return null;
+
+  let dx = 0, dy = 0, attacking = false;
+  if (character.isMoving && character.pathPoints && character.pathPoints.length > 0) {
+    dx = character.pathPoints[0].x - character.x;
+    dy = character.pathPoints[0].y - character.y;
+  } else if (character.attackTarget && character.attackTarget.hp > 0 && isInRangeOf(character, character.attackTarget)) {
+    dx = character.attackTarget.x - character.x;
+    dy = character.attackTarget.y - character.y;
+    attacking = true;
+  } else {
+    return { image: sprites.face, flip: false };
+  }
+
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    return { image: attacking ? sprites.attaque : sprites.cote, flip: dx > 0 };
+  }
+  return { image: dy < 0 ? sprites.dos : sprites.face, flip: false };
+}
+
 function drawCharacter(character) {
   const half = character.size / 2;
   if (character.selected) {
@@ -2687,14 +2733,25 @@ function drawCharacter(character) {
     ctx.strokeRect(character.x - half - 6, character.y - half - 6, character.size + 12, character.size + 12);
   }
   const dead = character.hp <= 0;
-  const sprite = CLASS_SPRITES[character.className];
-  const spriteReady = !dead && sprite && sprite.complete && sprite.naturalWidth;
+  const spriteInfo = !dead && spriteForCharacter(character);
+  const sprite = spriteInfo && spriteInfo.image;
+  const spriteReady = sprite && sprite.complete && sprite.naturalWidth;
   if (spriteReady) {
-    // Mis à l'échelle pour tenir dans le carré (proportions conservées, pas déformé) -- même
-    // emprise que le carré uni, pour ne rien décaler (barre de PV, badges de statut...).
-    const scale = Math.min(character.size / sprite.naturalWidth, character.size / sprite.naturalHeight);
+    // Mis à l'échelle sur SPRITE_SCALE * character.size (proportions conservées, pas déformé) --
+    // volontairement plus grand que l'emprise réelle (demande utilisateur explicite), qui elle ne
+    // change pas (barre de PV, badges de statut, hit-box... tous basés sur character.size).
+    const box = character.size * SPRITE_SCALE;
+    const scale = Math.min(box / sprite.naturalWidth, box / sprite.naturalHeight);
     const dw = sprite.naturalWidth * scale, dh = sprite.naturalHeight * scale;
-    ctx.drawImage(sprite, character.x - dw / 2, character.y - dh / 2, dw, dh);
+    ctx.save();
+    if (spriteInfo.flip) {
+      ctx.translate(character.x, character.y);
+      ctx.scale(-1, 1);
+      ctx.drawImage(sprite, -dw / 2, -dh / 2, dw, dh);
+    } else {
+      ctx.drawImage(sprite, character.x - dw / 2, character.y - dh / 2, dw, dh);
+    }
+    ctx.restore();
   } else {
     ctx.fillStyle = dead ? '#4a4a4a' : character.color;
     ctx.fillRect(character.x - half, character.y - half, character.size, character.size);
