@@ -45,7 +45,7 @@ const SCENES = [
 ];
 let currentScene = 'monde';
 
-const CHARACTER_SIZE = 48;
+const CHARACTER_SIZE = 36; // 48 * 75% (demande utilisateur explicite : tailles réduites à 75%)
 const ENEMY_SIZE = 72;
 // Marge supplémentaire (au-delà du strict contact bord à bord) laissée entre deux personnages.
 const AVOID_MARGIN = 4;
@@ -244,12 +244,13 @@ applyActivePartyToCombatSlots();
 // à chaque rond choisi (voir resetCombatEncounter) -- taille, PV, couleur, dégâts (melee ou à
 // distance) et lettre affichée sur le carré changent, pas le reste du moteur de combat (évitement,
 // riposte passive, etc., déjà génériques).
+// Tailles à 75% de leur valeur d'origine (44/52/64/50/76, demande utilisateur explicite).
 const ENCOUNTERS = [
-  { name: 'Gobelin', label: 'G', color: '#8bc34a', size: 44, hpMax: 1500, statValue: 10, combat: { melee: true, stat: 'force' }, hasBombAttack: true },
-  { name: 'Archer squelette', label: 'A', color: '#cfd8dc', size: 52, hpMax: 400, statValue: 16, combat: { melee: false, stat: 'force' } },
-  { name: 'Brute orque', label: 'O', color: '#795548', size: 64, hpMax: 800, statValue: 26, combat: { melee: true, stat: 'force' } },
-  { name: 'Sorcière', label: 'S', color: '#ab47bc', size: 50, hpMax: 600, statValue: 22, combat: { melee: false, stat: 'force' } },
-  { name: 'Seigneur des ombres', label: 'B', color: '#c62828', size: 76, hpMax: 5000, statValue: 30, combat: { melee: true, stat: 'force' }, isBoss: true },
+  { name: 'Gobelin', label: 'G', color: '#8bc34a', size: 33, hpMax: 1500, statValue: 10, combat: { melee: true, stat: 'force' }, hasBombAttack: true },
+  { name: 'Archer squelette', label: 'A', color: '#cfd8dc', size: 39, hpMax: 400, statValue: 16, combat: { melee: false, stat: 'force' } },
+  { name: 'Brute orque', label: 'O', color: '#795548', size: 48, hpMax: 800, statValue: 26, combat: { melee: true, stat: 'force' } },
+  { name: 'Sorcière', label: 'S', color: '#ab47bc', size: 38, hpMax: 600, statValue: 22, combat: { melee: false, stat: 'force' } },
+  { name: 'Seigneur des ombres', label: 'B', color: '#c62828', size: 57, hpMax: 5000, statValue: 30, combat: { melee: true, stat: 'force' }, isBoss: true },
 ];
 
 // Boss : plus gros, pas contrôlable par le joueur, a une barre de vie (voir drawEnemyHealthBar).
@@ -274,7 +275,7 @@ const enemies = characters.filter((c) => !c.playerControlled);
 let combatStats = createCombatStats();
 let expandedStatsCharacter = null; // personnage dont le détail est déplié sur l'écran de fin
 
-const PIXELS_PER_MS = 0.09; // vitesse de déplacement des personnages (constante sur tout le trajet)
+const PIXELS_PER_MS = 0.045; // vitesse de déplacement des personnages (constante sur tout le trajet) -- 0.09 / 2 (demande utilisateur explicite : tous les déplacements 2x plus lents)
 
 // Lance un déplacement vers (rawX, rawY), en ajustant la destination et en calculant un chemin
 // qui évite les autres personnages (voir en-tête du fichier).
@@ -3631,7 +3632,7 @@ function enterTrainingCombat() {
     enemy.name = "Mannequin d'entraînement";
     enemy.label = 'M';
     enemy.color = '#6d4c41';
-    enemy.size = 56;
+    enemy.size = 42; // 56 * 75% (demande utilisateur explicite : tailles réduites à 75%)
     enemy.hpMax = TRAINING_DUMMY_HP;
     enemy.hp = TRAINING_DUMMY_HP;
     enemy.combatOverride = { melee: true, stat: 'force' };
