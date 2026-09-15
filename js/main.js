@@ -2557,7 +2557,10 @@ function drawCombatEndScreen(now) {
   const rowHeight = 44;
   let y = TOP_BANNER_HEIGHT + 60;
 
-  for (const character of characters.filter((c) => c.playerControlled)) {
+  // Exclut les emplacements de complément d'un entraînement à moins de PARTY_SIZE personnages
+  // (voir resetPlayerCombatState/trainingInert) -- seuls ceux réellement sélectionnés apparaissent,
+  // qu'il y en ait 1 ou 4.
+  for (const character of characters.filter((c) => c.playerControlled && !c.trainingInert)) {
     const stats = combatStats[character.index] || { dealt: { total: 0, bySkill: {}, byEnemy: {} }, taken: { total: 0, bySkill: {}, byEnemy: {} } };
     const expanded = expandedStatsCharacter === character;
 
@@ -3426,7 +3429,11 @@ function resetPlayerCombatState(onlySelected) {
     resetTransientCombatState(character);
     character.x = squareXs[i];
     character.y = cy;
-    if (onlySelected && i >= activePartyIndices.length) character.hp = 0;
+    // Marqué distinctement d'un simple "mort" (hp<=0) : un vrai personnage tombé au combat doit
+    // quand même apparaître dans le résumé de fin (voir drawCombatEndScreen), alors qu'un
+    // emplacement de complément jamais sélectionné pour l'entraînement ne doit jamais y figurer.
+    character.trainingInert = !!(onlySelected && i >= activePartyIndices.length);
+    if (character.trainingInert) character.hp = 0;
     i += 1;
   }
 }
