@@ -2720,7 +2720,11 @@ function spriteForCharacter(character) {
   }
 
   if (Math.abs(dx) >= Math.abs(dy)) {
-    return { image: attacking ? sprites.attaque : sprites.cote, flip: dx > 0 };
+    // La pose d'attaque (sprites.attaque) est orientée à l'inverse de la pose de déplacement
+    // (sprites.cote) dans l'image d'origine -- sens du retournement inversé pour elle (demande
+    // utilisateur explicite : elle regardait à droite en attaquant vers la gauche, et inversement).
+    const flip = attacking ? dx < 0 : dx > 0;
+    return { image: attacking ? sprites.attaque : sprites.cote, flip };
   }
   return { image: dy < 0 ? sprites.dos : sprites.face, flip: false };
 }
