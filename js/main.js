@@ -245,9 +245,12 @@ applyActivePartyToCombatSlots();
 // distance) et lettre affichée sur le carré changent, pas le reste du moteur de combat (évitement,
 // riposte passive, etc., déjà génériques).
 // Tailles à 75% de leur valeur d'origine (44/52/64/50/76, demande utilisateur explicite).
+// bombAttack (voir updateBombAttack) : 'noAggroPlayer' fonce poser 1 bombe sous un joueur sans
+// aggro (Gobelin), 'random' tire un nombre de bombes à des points aléatoires de la map sans se
+// déplacer (Archer gobelin) -- toutes les 10s (BOMB_INTERVAL_MS) dans les deux cas.
 const ENCOUNTERS = [
-  { name: 'Gobelin', label: 'G', color: '#8bc34a', size: 33, hpMax: 1500, statValue: 10, combat: { melee: true, stat: 'force' }, hasBombAttack: true },
-  { name: 'Archer squelette', label: 'A', color: '#cfd8dc', size: 39, hpMax: 400, statValue: 16, combat: { melee: false, stat: 'force' } },
+  { name: 'Gobelin', label: 'G', color: '#8bc34a', size: 33, hpMax: 1500, statValue: 10, combat: { melee: true, stat: 'force' }, bombAttack: { targeting: 'noAggroPlayer', count: 1 } },
+  { name: 'Archer gobelin', label: 'A', color: '#cfd8dc', size: 39, hpMax: 400, statValue: 16, combat: { melee: false, stat: 'force' }, bombAttack: { targeting: 'random', count: 3 } },
   { name: 'Brute orque', label: 'O', color: '#795548', size: 48, hpMax: 800, statValue: 26, combat: { melee: true, stat: 'force' } },
   { name: 'Sorcière', label: 'S', color: '#ab47bc', size: 38, hpMax: 600, statValue: 22, combat: { melee: false, stat: 'force' } },
   { name: 'Seigneur des ombres', label: 'B', color: '#c62828', size: 57, hpMax: 5000, statValue: 30, combat: { melee: true, stat: 'force' }, isBoss: true },
@@ -456,12 +459,14 @@ function highestThreatPlayer(now) {
 }
 
 // ------------------------------------------------------------
-// Bombe du Gobelin (voir ENCOUNTERS/hasBombAttack, demande utilisateur explicite) : toutes les
-// BOMB_INTERVAL_MS, il fonce (vitesse multipliée, voir BOMB_DASH_SPEED_MULTIPLIER/updateMove) se
-// placer sous un joueur qui n'a PAS l'aggro actuelle (enemy.attackTarget), y pose une bombe
-// télégraphiée (icône + zone qui se referme, voir drawBomb) puis explose après BOMB_FUSE_MS en
-// infligeant BOMB_DAMAGE à quiconque reste dans BOMB_RADIUS -- pas seulement sa cible initiale,
-// qui peut donc s'en écarter entre-temps.
+// Bombes (voir ENCOUNTERS/bombAttack, demande utilisateur explicite) : toutes les
+// BOMB_INTERVAL_MS, un ennemi avec bombAttack en pose -- 'noAggroPlayer' (Gobelin) fonce
+// (vitesse multipliée, voir BOMB_DASH_SPEED_MULTIPLIER/updateMove) se placer sous un joueur qui
+// n'a PAS l'aggro actuelle (enemy.attackTarget), 'random' (Archer gobelin) tire bombAttack.count
+// bombes à des points aléatoires de la map sans se déplacer. Chaque bombe est télégraphiée (icône
+// + zone qui se referme, voir drawBomb) puis explose après BOMB_FUSE_MS en infligeant BOMB_DAMAGE
+// à quiconque reste dans BOMB_RADIUS -- pas forcément sa cible initiale (mode noAggroPlayer), qui
+// peut donc s'en écarter entre-temps.
 // ------------------------------------------------------------
 const BOMB_INTERVAL_MS = 10000;
 const BOMB_FUSE_MS = 5000;
@@ -494,10 +499,35 @@ function updateBombs(now) {
   activeBombs = activeBombs.filter((bomb) => !bomb.exploded || now - bomb.explodeAt < 300);
 }
 
-// Fonce se placer sous un joueur sans aggro puis pose une bombe (voir spawnBomb) -- réutilise le
-// système de déplacement existant (pathPoints/isMoving, voir updateMove), juste temporairement
-// accéléré (bombDashUntil) pour rendre le geste "rapide" (demande utilisateur explicite).
-function updateBombAttack(enemy, now) {
+// Point aléatoire n'importe où sur le terrain de combat visible (sous le bandeau du haut) -- sert
+// au tir de bombes "random" (Archer gobelin, voir updateBombAttack). Réutilise clampPointToField
+// avec un point sans dimension/non-joueur pour ne pas être cantonné aux 2 tiers du bas comme le
+// sont les personnages avant le pull.
+function randomFieldPoint() {
+  const x = Math.random() * canvas.width;
+  const y = TOP_BANNER_HEIGHT + Math.random() * (canvas.height - TOP_BANNER_HEIGHT);
+  return clampPointToField({ size: 0, playerControlled: false }, x, y);
+}
+
+// Tire bombAttack.count bombes à des points aléatoires de la map, sans se déplacer (mode
+// 'random', voir spawnBomb).
+function fireRandomBombs(enemy, now) {
+  if (!enemy.nextBombAt) enemy.nextBombAt = now + BOMB_INTERVAL_MS;
+  if (now < enemy.nextBombAt) return;
+  enemy.nextBombAt = now + BOMB_INTERVAL_MS;
+
+  const count = enemy.bombAttack.count || 1;
+  for (let i = 0; i < count; i++) {
+    const point = randomFieldPoint();
+    spawnBomb(point.x, point.y, enemy);
+  }
+}
+
+// Fonce se placer sous un joueur sans aggro puis pose 1 bombe (mode 'noAggroPlayer', voir
+// spawnBomb) -- réutilise le système de déplacement existant (pathPoints/isMoving, voir
+// updateMove), juste temporairement accéléré (bombDashUntil) pour rendre le geste "rapide"
+// (demande utilisateur explicite).
+function dashAndPlantBomb(enemy, now) {
   if (enemy.bombDashTarget) {
     if (!enemy.isMoving) {
       spawnBomb(enemy.x, enemy.y, enemy);
@@ -520,6 +550,11 @@ function updateBombAttack(enemy, now) {
   enemy.pathPoints = [{ x: victim.x, y: victim.y }];
   enemy.isMoving = true;
   enemy.bombDashUntil = now + 3000;
+}
+
+function updateBombAttack(enemy, now) {
+  if (enemy.bombAttack.targeting === 'random') fireRandomBombs(enemy, now);
+  else dashAndPlantBomb(enemy, now);
 }
 
 // IA d'un ennemi (voir ENCOUNTERS) : attaque le personnage qui a le plus de menace vis-à-vis de
@@ -550,7 +585,7 @@ function updateEnemyAI(enemy, now) {
     }
   }
 
-  if (enemy.hasBombAttack) updateBombAttack(enemy, now);
+  if (enemy.bombAttack) updateBombAttack(enemy, now);
 
   const target = enemy.attackTarget;
   if (enemy.isMoving || isInRangeOf(enemy, target)) return;
@@ -3611,7 +3646,7 @@ function resetCombatEncounter(levelIndex) {
     enemy.combatOverride = encounter.combat;
     enemy.stats = { force: encounter.statValue };
     enemy.trainingDummy = false;
-    enemy.hasBombAttack = !!encounter.hasBombAttack;
+    enemy.bombAttack = encounter.bombAttack || null;
     resetTransientCombatState(enemy);
     const spawn = clampPointToField({ size: encounter.size }, cx, cy - 220);
     enemy.x = spawn.x;
@@ -3660,7 +3695,7 @@ function enterTrainingCombat() {
     enemy.combatOverride = { melee: true, stat: 'force' };
     enemy.stats = { force: 0 };
     enemy.trainingDummy = true;
-    enemy.hasBombAttack = false;
+    enemy.bombAttack = null;
     resetTransientCombatState(enemy);
     const spawn = clampPointToField({ size: enemy.size }, cx, cy - 220);
     enemy.x = spawn.x;
