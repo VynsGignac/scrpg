@@ -419,6 +419,21 @@ function addThreat(character, amount, now) {
   character.lastThreatAt = now;
 }
 
+// Le Paladin et le Gardien (tanks, demande utilisateur explicite) génèrent plus de menace pour
+// TOUT ce qu'ils font eux-mêmes -- attaque de base, dégâts de compétence, soin, bonus de menace
+// des sorts de provocation (Mur sacré/Coup de bouclier/Cri de défi, déjà au-dessus de la moyenne,
+// multipliés eux aussi) -- mais pas pour la menace qu'ils accumulent en ENCAISSANT des coups, qui
+// reste la menace brute non multipliée (voir l'appel direct à addThreat dans dealDamage pour la
+// cible). D'où un multiplicateur appliqué ici, à la source d'une action, plutôt que dans addThreat
+// lui-même qui sert aux deux cas.
+const TANK_THREAT_MULTIPLIER = 2;
+const TANK_THREAT_CLASSES = new Set(['Paladin', 'Gardien']);
+
+function addOwnActionThreat(character, amount, now) {
+  const multiplier = TANK_THREAT_CLASSES.has(character.className) ? TANK_THREAT_MULTIPLIER : 1;
+  addThreat(character, amount * multiplier, now);
+}
+
 function effectiveThreat(character, now) {
   const elapsed = now - (character.lastThreatAt || 0);
   if (elapsed >= THREAT_DECAY_MS) return 0;
@@ -816,7 +831,7 @@ function dealDamage(target, amount, rgb, source, isCrit, skillLabel) {
   }
 
   if (!target.playerControlled && source && source.playerControlled) {
-    addThreat(source, afterReduction, now); // le joueur inflige des dégâts à l'ennemi
+    addOwnActionThreat(source, afterReduction, now); // le joueur inflige des dégâts à l'ennemi
     recordDamageStat(source.index, 'dealt', afterReduction, skillLabel, target.name || 'Ennemi');
   } else if (target.playerControlled && source && !source.playerControlled) {
     addThreat(target, afterReduction, now); // le joueur subit des dégâts de l'ennemi
@@ -879,7 +894,7 @@ function healCharacter(target, amount, source) {
   target.hp = Math.min(target.hpMax, target.hp + amount);
   spawnFloatingText(target.x + (Math.random() - 0.5) * 24, target.y - target.size / 2 - 34, `+${amount}`, '129, 199, 132');
   spawnSkillEffect(target.x, target.y, target.size, '129, 199, 132');
-  if (source && source.playerControlled) addThreat(source, amount, performance.now());
+  if (source && source.playerControlled) addOwnActionThreat(source, amount, performance.now());
 }
 
 // Effet à tick (brûlure/saignement) : inflige damagePerTick toutes les tickIntervalMs, ticksLeft
@@ -1153,7 +1168,7 @@ const SKILLS = {
       character.shieldExpiresAt = now + 8000;
       character.damageReductionFactor = 0.25;
       character.damageReductionUntil = now + 8000;
-      addThreat(character, 100, now);
+      addOwnActionThreat(character, 100, now);
       target.tauntedBy = character;
       target.tauntUntil = now + 3000;
     },
@@ -1691,7 +1706,7 @@ const SKILLS = {
     cast(character, target) {
       const { amount, crit } = computeStatDamage(character, 'force', 0.7);
       if (dealDamage(target, amount, '84, 110, 122', character, crit, 'Coup de bouclier')) {
-        addThreat(character, amount, performance.now()); // menace doublée : dégâts + ce bonus
+        addOwnActionThreat(character, amount, performance.now()); // menace doublée : dégâts + ce bonus
       }
     },
   },
@@ -1716,7 +1731,7 @@ const SKILLS = {
         if (Math.hypot(enemy.x - character.x, enemy.y - character.y) > ZONE_RADIUS) continue;
         enemy.tauntedBy = character;
         enemy.tauntUntil = now + 4000;
-        addThreat(character, 100, now);
+        addOwnActionThreat(character, 100, now);
       }
     },
   },
