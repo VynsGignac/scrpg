@@ -1,6 +1,6 @@
 # ============================================================
 # Reconstruit l'APK Android à partir des fichiers du jeu (index.html, manifest.json, sw.js, js/,
-# icons/). À relancer à chaque fois que le jeu change et qu'il faut une nouvelle APK.
+# icons/, img/). À relancer à chaque fois que le jeu change et qu'il faut une nouvelle APK.
 #
 # Utilisation : clic droit > "Exécuter avec PowerShell"
 # (ou en ligne de commande : powershell -ExecutionPolicy Bypass -File build-apk.ps1)
@@ -44,6 +44,7 @@ Copy-Item "$root\manifest.json" $www
 Copy-Item "$root\sw.js" $www
 Copy-Item "$root\js" "$www\js" -Recurse
 Copy-Item "$root\icons" "$www\icons" -Recurse
+Copy-Item "$root\img" "$www\img" -Recurse
 
 Write-Host "3/4 Synchronisation du projet Android (Capacitor)..." -ForegroundColor Cyan
 Push-Location $root

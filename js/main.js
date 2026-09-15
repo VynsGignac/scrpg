@@ -32,6 +32,27 @@ function resizeCanvas() {
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 
+// Fond d'écran de la scène Combat (demande utilisateur explicite, image fournie par
+// l'utilisateur) -- chargé une fois au démarrage ; tant qu'il n'est pas prêt (tout premier
+// affichage avant la fin du chargement), le fond uni existant reste visible en repli silencieux,
+// voir drawCombatBackground.
+const combatBackgroundImage = new Image();
+let combatBackgroundReady = false;
+combatBackgroundImage.onload = () => { combatBackgroundReady = true; };
+combatBackgroundImage.src = 'img/combat-bg.png';
+
+// Dessine l'image en mode "cover" (remplit tout le canvas en conservant ses proportions, recadrée
+// si besoin) plutôt qu'étirée -- appelée par-dessus le fond uni déjà peint (voir draw()), donc
+// invisible tant que l'image n'est pas prête.
+function drawCombatBackground() {
+  if (!combatBackgroundReady) return;
+  const iw = combatBackgroundImage.width, ih = combatBackgroundImage.height;
+  if (!iw || !ih) return;
+  const scale = Math.max(canvas.width / iw, canvas.height / ih);
+  const dw = iw * scale, dh = ih * scale;
+  ctx.drawImage(combatBackgroundImage, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
+}
+
 // Bandeau de navigation en haut de l'écran, toujours visible quelle que soit la scène active :
 // un bouton par scène. "Combat" n'y figure plus (demande utilisateur explicite) : on y arrive
 // uniquement en cliquant un rond de la carte du Monde (voir enterCombatLevel) -- currentScene
@@ -4364,6 +4385,7 @@ function draw() {
   hoverRects = [];
 
   if (currentScene === 'combat') {
+    drawCombatBackground();
     for (const enemy of enemies) {
       if (enemy.flyingBombAttack) drawArtificierProximityZone(enemy);
     }
