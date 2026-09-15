@@ -166,8 +166,8 @@ function statsForClass(className) {
   return { ...(CLASS_STATS[className] || { force: 8, agilite: 8, endurance: 8, intelligence: 8, savoir: 8 }) };
 }
 
-// Emplacements d'équipement d'un personnage -- vides pour l'instant, aucun objet n'existe encore
-// dans le jeu (voir drawCharacterScene pour leur affichage).
+// Emplacements d'équipement d'un personnage (voir drawRosterCharacterDetail pour leur affichage,
+// et plus bas pour le système d'objets qui les remplit).
 const EQUIPMENT_SLOTS = [
   { key: 'tete', label: 'Tête' },
   { key: 'torse', label: 'Torse' },
@@ -183,6 +183,84 @@ function createEmptyEquipment() {
   const equipment = {};
   for (const slot of EQUIPMENT_SLOTS) equipment[slot.key] = null;
   return equipment;
+}
+
+// ------------------------------------------------------------
+// Objets (demande utilisateur explicite) : chacun boost UNE caractéristique d'une valeur fixe et
+// appartient à un emplacement précis (slotKey, voir EQUIPMENT_SLOTS ci-dessus). 5 raretés prévues
+// au total, seule la grise est générée pour l'instant (+1 à +3 aléatoire sur une caractéristique
+// aléatoire) -- les autres viendront plus tard avec probablement d'autres effets, pas seulement un
+// bonus de stat plus gros.
+// Tombent en butin à la victoire (voir grantVictoryLoot, 2 objets à chaque fois) dans un
+// inventaire commun (inventory) -- rien n'est équipé automatiquement, le joueur choisit lui-même
+// où les placer en tapant un emplacement d'équipement (voir openEquipmentPicker/
+// drawEquipmentPickerOverlay). setEquippedItem gère aussi bien l'équipement que le retrait (item
+// null), et recalcule les caractéristiques effectives du personnage à chaque changement
+// (recomputeStats) puisque le bonus ne doit compter que tant que l'objet reste équipé.
+// ------------------------------------------------------------
+const ITEM_RARITIES = [
+  { key: 'gris', label: 'Gris', color: '#9e9e9e' },
+  { key: 'vert', label: 'Vert', color: '#66bb6a' },
+  { key: 'bleu', label: 'Bleu', color: '#42a5f5' },
+  { key: 'violet', label: 'Violet', color: '#ab47bc' },
+  { key: 'orange', label: 'Orange', color: '#ffa726' },
+];
+const ITEM_RARITY_BY_KEY = Object.fromEntries(ITEM_RARITIES.map((r) => [r.key, r]));
+
+const ITEM_STAT_LABELS = {
+  force: 'Force', agilite: 'Agilité', endurance: 'Endurance', intelligence: 'Intelligence', savoir: 'Savoir',
+};
+const ITEM_STAT_KEYS = Object.keys(ITEM_STAT_LABELS);
+
+let inventory = [];
+let lastVictoryLoot = []; // les objets obtenus à LA DERNIÈRE victoire -- juste pour l'afficher sur l'écran de fin
+let nextItemId = 1;
+
+function generateGrayItem() {
+  const eqSlot = EQUIPMENT_SLOTS[Math.floor(Math.random() * EQUIPMENT_SLOTS.length)];
+  const statKey = ITEM_STAT_KEYS[Math.floor(Math.random() * ITEM_STAT_KEYS.length)];
+  const value = 1 + Math.floor(Math.random() * 3); // 1 à 3 inclus
+  return {
+    id: nextItemId++,
+    rarity: 'gris',
+    slotKey: eqSlot.key,
+    slotLabel: eqSlot.label,
+    statKey,
+    statLabel: ITEM_STAT_LABELS[statKey],
+    value,
+    label: `+${value}`, // affiché dans la petite case d'équipement (voir drawRosterCharacterDetail)
+  };
+}
+
+function grantVictoryLoot() {
+  lastVictoryLoot = [generateGrayItem(), generateGrayItem()];
+  inventory.push(...lastVictoryLoot);
+}
+
+// Recalcule stats (baseStats + bonus des objets équipés) et, par ricochet, PV/mana max -- appelé
+// après tout changement d'équipement (voir setEquippedItem). Plafonne aussi les PV/mana courants
+// au cas où le max viendrait de baisser (retrait d'un objet d'Endurance/Savoir en cours de combat).
+function recomputeStats(character) {
+  const stats = { ...character.baseStats };
+  for (const slotKey of Object.keys(character.equipment)) {
+    const item = character.equipment[slotKey];
+    if (item) stats[item.statKey] = (stats[item.statKey] || 0) + item.value;
+  }
+  character.stats = stats;
+  character.hpMax = stats.endurance * 10;
+  character.manaMax = BASE_MANA + stats.savoir * 10;
+  character.hp = Math.min(character.hp, character.hpMax);
+  character.mana = Math.min(character.mana, character.manaMax);
+}
+
+// Équipe "item" dans "slotKey" (ou le vide si item est null) -- l'éventuel ancien occupant du
+// slot retourne dans l'inventaire plutôt que d'être perdu.
+function setEquippedItem(character, slotKey, item) {
+  const current = character.equipment[slotKey];
+  if (current) inventory.push(current);
+  character.equipment[slotKey] = item || null;
+  if (item) inventory = inventory.filter((it) => it.id !== item.id);
+  recomputeStats(character);
 }
 
 // ------------------------------------------------------------
@@ -212,7 +290,11 @@ function squareXFor(slot, count) {
 const BASE_MANA = 50;
 
 const roster = CHARACTER_CLASSES.map((className, i) => {
-  const stats = statsForClass(className);
+  // baseStats = valeurs pures de la classe, jamais modifiées ; stats = baseStats + bonus
+  // d'équipement (voir recomputeStats), c'est stats qui sert partout ailleurs dans le jeu
+  // (dégâts, PV/mana max...) -- garder les deux séparés permet de retirer un objet proprement.
+  const baseStats = statsForClass(className);
+  const stats = { ...baseStats };
   // PV = Endurance x10 (demande utilisateur explicite).
   const hpMax = stats.endurance * 10;
   const manaMax = BASE_MANA + stats.savoir * 10;
@@ -222,7 +304,7 @@ const roster = CHARACTER_CLASSES.map((className, i) => {
     selected: false, isMoving: false,
     playerControlled: true, index: 0, className, level: 1, xp: 0,
     label: className.charAt(0), // ex. "M" pour Mage -- affiché sur le carré (voir drawCharacter)
-    stats, hp: hpMax, hpMax, mana: manaMax, manaMax, threat: 0, lastThreatAt: 0,
+    baseStats, stats, hp: hpMax, hpMax, mana: manaMax, manaMax, threat: 0, lastThreatAt: 0,
     equipment: createEmptyEquipment(),
   };
 });
@@ -2905,6 +2987,28 @@ function drawCombatEndScreen(now) {
   const rowHeight = 44;
   let y = TOP_BANNER_HEIGHT + 60;
 
+  // Butin de CETTE victoire (voir grantVictoryLoot) -- jamais pour l'entraînement, le mannequin
+  // n'accorde ni XP ni objets. Équipement plus tard depuis l'onglet Personnage (voir
+  // openEquipmentPicker), ici juste un rappel de ce qui vient d'être obtenu.
+  if (victory && !isTrainingCombat && lastVictoryLoot.length > 0) {
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.font = 'bold 12px sans-serif';
+    ctx.fillStyle = '#ffffff99';
+    ctx.fillText('Butin obtenu', cardX, y + 8);
+    y += 18;
+    for (const item of lastVictoryLoot) {
+      const rarity = ITEM_RARITY_BY_KEY[item.rarity];
+      ctx.fillStyle = rarity.color;
+      ctx.fillRect(cardX, y, 12, 12);
+      ctx.font = '12px sans-serif';
+      ctx.fillStyle = '#ffffffcc';
+      ctx.fillText(`${item.slotLabel} · ${rarity.label} · +${item.value} ${item.statLabel}`, cardX + 20, y + 10);
+      y += 20;
+    }
+    y += 8;
+  }
+
   // characters ne contient plus que les personnages réellement sélectionnés (voir
   // applyActivePartyToCombatSlots) -- qu'il y en ait 1 ou PARTY_SIZE, tous y figurent, sans
   // emplacement de complément à exclure.
@@ -3458,6 +3562,7 @@ const STAT_ROWS = [
 ];
 const STAT_MAX = 20;
 let expandedRosterCharacter = null; // personnage du roster dont le détail est déplié
+let openEquipmentPicker = null; // { character, slotKey }, voir drawEquipmentPickerOverlay
 
 // Détail complet d'un personnage du roster (XP, caractéristiques, équipement) -- déplié sous sa
 // ligne compacte dans la scène Personnage quand on tape dessus. Renvoie la hauteur utilisée.
@@ -3497,26 +3602,34 @@ function drawRosterCharacterDetail(character, x, y, width) {
   rowY += 6;
   ctx.font = '11px sans-serif';
   ctx.fillStyle = '#ffffff99';
-  ctx.fillText('Équipement', x, rowY + 8);
+  ctx.fillText(inventory.length > 0 ? `Équipement · ${inventory.length} objet(s) en inventaire` : 'Équipement', x, rowY + 8);
   rowY += 14;
 
+  // Une case par emplacement (voir EQUIPMENT_SLOTS) -- teintée de la couleur de rareté si occupée
+  // (voir ITEM_RARITY_BY_KEY), tapoter ouvre le choix parmi les objets compatibles de l'inventaire
+  // (voir openEquipmentPicker/drawEquipmentPickerOverlay, demande utilisateur explicite : "le
+  // joueur choisit lui-même").
   const slotGap = 4;
   const slotSize = Math.min(30, (width - (EQUIPMENT_SLOTS.length - 1) * slotGap) / EQUIPMENT_SLOTS.length);
   let slotX = x;
   for (const eqSlot of EQUIPMENT_SLOTS) {
     const item = character.equipment[eqSlot.key];
-    ctx.fillStyle = '#ffffff10';
+    const rarity = item ? ITEM_RARITY_BY_KEY[item.rarity] : null;
+    ctx.fillStyle = rarity ? `${rarity.color}33` : '#ffffff10';
     ctx.fillRect(slotX, rowY, slotSize, slotSize);
-    ctx.strokeStyle = '#ffffff33';
+    ctx.strokeStyle = rarity ? rarity.color : '#ffffff33';
     ctx.lineWidth = 1;
     ctx.strokeRect(slotX + 0.5, rowY + 0.5, slotSize - 1, slotSize - 1);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.font = `${Math.max(7, Math.round(slotSize * 0.32))}px sans-serif`;
-    ctx.fillStyle = '#ffffff55';
+    ctx.fillStyle = item ? '#ffffff' : '#ffffff55';
     ctx.fillText(item ? item.label : eqSlot.label.slice(0, 2), slotX + slotSize / 2, rowY + slotSize / 2 + 1);
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
+    registerHitRect(slotX, rowY, slotSize, slotSize, () => {
+      openEquipmentPicker = { character, slotKey: eqSlot.key };
+    });
     slotX += slotSize + slotGap;
   }
   rowY += slotSize + 8;
@@ -3624,6 +3737,94 @@ function drawSkillsTooltip(character) {
   }
 }
 
+// Menu ouvert en tapant un emplacement d'équipement (voir openEquipmentPicker/
+// drawRosterCharacterDetail) : plein écran par-dessus tout le reste, même schéma que
+// drawAccountDropdownOverlay -- "Retirer" (si occupé) renvoie l'objet en inventaire, puis un objet
+// compatible (même slotKey) de l'inventaire par ligne, coloré selon sa rareté.
+function drawEquipmentPickerOverlay() {
+  const { character, slotKey } = openEquipmentPicker;
+  const eqSlot = EQUIPMENT_SLOTS.find((s) => s.key === slotKey);
+  const currentItem = character.equipment[slotKey];
+  const options = inventory.filter((it) => it.slotKey === slotKey);
+
+  ctx.fillStyle = 'rgba(8, 10, 13, 0.92)';
+  ctx.fillRect(0, TOP_BANNER_HEIGHT, canvas.width, canvas.height - TOP_BANNER_HEIGHT);
+  registerHitRect(0, TOP_BANNER_HEIGHT, canvas.width, canvas.height - TOP_BANNER_HEIGHT, () => { openEquipmentPicker = null; });
+
+  const cardX = LIST_PADDING_X;
+  const cardWidth = canvas.width - LIST_PADDING_X * 2;
+  const panelY = TOP_BANNER_HEIGHT + 16;
+  const headerHeight = 40;
+  const rowHeight = 44;
+  // "Retirer" (si occupé) + soit une ligne par objet compatible, soit une seule ligne d'invite si
+  // l'inventaire n'en a aucun -- toujours l'un OU l'autre, jamais les deux à la fois, voir plus bas.
+  const rowCount = (currentItem ? 1 : 0) + (options.length > 0 ? options.length : 1);
+  const panelHeight = headerHeight + rowCount * rowHeight + 10;
+
+  ctx.fillStyle = '#1b232b';
+  ctx.fillRect(cardX, panelY, cardWidth, panelHeight);
+  ctx.strokeStyle = '#ffd54f88';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(cardX + 0.5, panelY + 0.5, cardWidth - 1, panelHeight - 1);
+
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.fillStyle = '#ffd54f';
+  ctx.fillText(`Équiper : ${eqSlot.label} (${character.className})`, cardX + CARD_PADDING, panelY + headerHeight / 2);
+
+  let optY = panelY + headerHeight;
+
+  if (currentItem) {
+    const rarity = ITEM_RARITY_BY_KEY[currentItem.rarity];
+    ctx.fillStyle = '#ffffff0d';
+    ctx.fillRect(cardX, optY, cardWidth, rowHeight);
+    ctx.strokeStyle = '#ffffff22';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(cardX + 0.5, optY + 0.5, cardWidth - 1, rowHeight - 1);
+    ctx.fillStyle = rarity.color;
+    ctx.fillRect(cardX + CARD_PADDING, optY + rowHeight / 2 - 7, 14, 14);
+    ctx.font = 'bold 13px sans-serif';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(`Retirer (${rarity.label} · +${currentItem.value} ${currentItem.statLabel})`, cardX + CARD_PADDING + 22, optY + rowHeight / 2 + 1);
+    registerHitRect(cardX, optY, cardWidth, rowHeight, () => {
+      setEquippedItem(character, slotKey, null);
+      openEquipmentPicker = null;
+    });
+    optY += rowHeight;
+  }
+
+  if (options.length === 0) {
+    ctx.fillStyle = '#ffffff0d';
+    ctx.fillRect(cardX, optY, cardWidth, rowHeight);
+    ctx.strokeStyle = '#ffffff22';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(cardX + 0.5, optY + 0.5, cardWidth - 1, rowHeight - 1);
+    ctx.font = '13px sans-serif';
+    ctx.fillStyle = '#ffffff77';
+    ctx.fillText('Aucun objet disponible pour cet emplacement', cardX + CARD_PADDING, optY + rowHeight / 2 + 1);
+  } else {
+    for (const item of options) {
+      const rarity = ITEM_RARITY_BY_KEY[item.rarity];
+      ctx.fillStyle = '#ffffff0d';
+      ctx.fillRect(cardX, optY, cardWidth, rowHeight);
+      ctx.strokeStyle = '#ffffff22';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(cardX + 0.5, optY + 0.5, cardWidth - 1, rowHeight - 1);
+      ctx.fillStyle = rarity.color;
+      ctx.fillRect(cardX + CARD_PADDING, optY + rowHeight / 2 - 7, 14, 14);
+      ctx.font = 'bold 13px sans-serif';
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(`${rarity.label} · +${item.value} ${item.statLabel}`, cardX + CARD_PADDING + 22, optY + rowHeight / 2 + 1);
+      registerHitRect(cardX, optY, cardWidth, rowHeight, () => {
+        setEquippedItem(character, slotKey, item);
+        openEquipmentPicker = null;
+      });
+      optY += rowHeight;
+    }
+  }
+}
+
 // Scène "Personnage" : tout le roster (les 11 classes possédées), pas seulement les 4 actuellement
 // en donjon -- demande utilisateur explicite (voir la scène Guilde pour choisir qui part). Une
 // ligne compacte par personnage (11 ne tiennent pas tous en détail complet sans défilement, qui
@@ -3690,6 +3891,8 @@ function drawCharacterScene() {
 
   setSceneContentHeight('personnage', y + getSceneScrollY('personnage') - viewTop);
   drawSceneScrollbar('personnage', viewTop);
+
+  if (openEquipmentPicker) drawEquipmentPickerOverlay();
 }
 
 // Repère visuel minimal indiquant qu'une scène à défilement (voir SCROLLABLE_SCENES) a plus de
@@ -3938,6 +4141,7 @@ function checkCombatOutcome() {
       if (character.playerControlled) grantXp(character, VICTORY_XP);
     }
     for (const player of players) grantXp(player, VICTORY_XP);
+    grantVictoryLoot(); // 2 objets à chaque victoire (demande utilisateur explicite, voir plus haut)
     return;
   }
 
