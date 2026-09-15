@@ -534,12 +534,17 @@ function updateBombs(now) {
   activeBombs = activeBombs.filter((bomb) => !bomb.exploded || now - bomb.explodeAt < 300);
 }
 
-// Point aléatoire n'importe où sur le terrain de combat visible (sous le bandeau du haut) -- sert
-// au tir de bombes "random" (Archer gobelin, voir updateBombAttack). Réutilise clampPointToField
-// avec un point sans dimension/non-joueur pour ne pas être cantonné aux 2 tiers du bas comme le
-// sont les personnages avant le pull.
+// Point aléatoire pour le tir de bombes "random" (Archer gobelin, voir updateBombAttack) --
+// centre toujours dans la bande centrale de la map en largeur (RANDOM_BOMB_BAND_WIDTH_RATIO,
+// demande utilisateur explicite : "66% de la largeur de la zone de combat"), n'importe où en
+// hauteur. Réutilise clampPointToField avec un point sans dimension/non-joueur pour ne pas être
+// cantonné aux 2 tiers du bas comme le sont les personnages avant le pull.
+const RANDOM_BOMB_BAND_WIDTH_RATIO = 0.66;
+
 function randomFieldPoint() {
-  const x = Math.random() * canvas.width;
+  const bandWidth = canvas.width * RANDOM_BOMB_BAND_WIDTH_RATIO;
+  const bandX = (canvas.width - bandWidth) / 2;
+  const x = bandX + Math.random() * bandWidth;
   const y = TOP_BANNER_HEIGHT + Math.random() * (canvas.height - TOP_BANNER_HEIGHT);
   return clampPointToField({ size: 0, playerControlled: false }, x, y);
 }
@@ -610,11 +615,11 @@ function updateBombAttack(enemy, now) {
 const ARTIFICIER_BOMB_BASE_MS = 4000;
 const ARTIFICIER_PROXIMITY_BONUS_MS = 3000;
 const ARTIFICIER_PROXIMITY_RADIUS = 110; // 220 * 50% (demande utilisateur explicite)
-const FLYING_BOMB_HP = 100;
+const FLYING_BOMB_HP = 30;
 // Vitesse calculée par bombe (voir launchFlyingBomb) plutôt que fixe : met TOUJOURS
 // FLYING_BOMB_TRAVEL_MS à traverser l'écran quelle que soit la distance à parcourir (donc quelle
 // que soit la taille de l'écran) -- demande utilisateur explicite : "10s pour traverser l'écran".
-const FLYING_BOMB_TRAVEL_MS = 10000;
+const FLYING_BOMB_TRAVEL_MS = 15000;
 const FLYING_BOMB_DAMAGE = 50;
 const FLYING_BOMB_SIZE = 26;
 // Bleu (demande utilisateur explicite) -- distinct du noir des bombes au sol (BOMB_COLOR_RGB).
