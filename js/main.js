@@ -588,6 +588,40 @@ function drawFloatingTexts(now) {
   }
 }
 
+// ------------------------------------------------------------------
+// Effet visuel de sort (demande utilisateur explicite : "quelque chose de très simple, mais
+// pouvoir au moins voir quelque chose") -- un simple anneau qui grandit et s'estompe sur la
+// cible touchée, coloré avec le même rgb que le texte de dégâts/soin de ce sort-là (déjà propre à
+// chaque sort, voir dealDamage/healCharacter). Accroché directement à dealDamage/healCharacter :
+// couvre donc automatiquement l'attaque de base, les 48 sorts et les DOT/brûlures/ticks, sans
+// avoir à instrumenter chacun individuellement.
+// ------------------------------------------------------------------
+const skillEffects = [];
+const SKILL_EFFECT_DURATION_MS = 450;
+
+function spawnSkillEffect(x, y, size, rgb) {
+  skillEffects.push({ x, y, size, rgb, createdAt: performance.now() });
+}
+
+function updateSkillEffects(now) {
+  for (let i = skillEffects.length - 1; i >= 0; i--) {
+    if (now - skillEffects[i].createdAt > SKILL_EFFECT_DURATION_MS) skillEffects.splice(i, 1);
+  }
+}
+
+function drawSkillEffects(now) {
+  ctx.lineWidth = 3;
+  for (const effect of skillEffects) {
+    const t = (now - effect.createdAt) / SKILL_EFFECT_DURATION_MS;
+    const radius = effect.size / 2 + t * effect.size * 0.6;
+    const alpha = Math.max(0, 1 - t);
+    ctx.strokeStyle = `rgba(${effect.rgb}, ${alpha.toFixed(2)})`;
+    ctx.beginPath();
+    ctx.arc(effect.x, effect.y, radius, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+}
+
 // ------------------------------------------------------------
 // Compétences (voir bandeau de sélection, deux premières cases) : deux sorts par classe pour
 // l'instant, un clic sur la case lance le sort (pas de visée séparée -- une seule cible possible
@@ -692,6 +726,7 @@ function dealDamage(target, amount, rgb, source, isCrit, skillLabel) {
     target.x + (Math.random() - 0.5) * 24, target.y - target.size / 2 - 34,
     `-${afterReduction}${isCrit ? '!' : ''}`, isCrit ? '255, 213, 79' : rgb
   );
+  spawnSkillEffect(target.x, target.y, target.size, isCrit ? '255, 213, 79' : rgb);
   // Sert à l'IA pour savoir si elle vient de se faire attaquer (voir AUTO_DEFENSIVE_SKILLS).
   if (target.playerControlled) target.lastDamageTakenAt = now;
   // Posture défensive (Guerrier) : encaisser un coup pendant qu'elle est active génère de la Rage.
@@ -762,6 +797,7 @@ function computeHybridStatDamage(character, primaryKey, primaryPercent, secondar
 function healCharacter(target, amount, source) {
   target.hp = Math.min(target.hpMax, target.hp + amount);
   spawnFloatingText(target.x + (Math.random() - 0.5) * 24, target.y - target.size / 2 - 34, `+${amount}`, '129, 199, 132');
+  spawnSkillEffect(target.x, target.y, target.size, '129, 199, 132');
   if (source && source.playerControlled) addThreat(source, amount, performance.now());
 }
 
@@ -3648,6 +3684,7 @@ function draw() {
       ctx.stroke();
     }
 
+    drawSkillEffects(performance.now());
     drawFloatingTexts(performance.now());
 
     if (combatPhase === 'victory' || combatPhase === 'defeat') {
@@ -3712,6 +3749,7 @@ function loop(now) {
     updateManaRegen(character, dt);
   }
   updateFloatingTexts(now);
+  updateSkillEffects(now);
   checkCombatOutcome();
   draw();
   requestAnimationFrame(loop);
