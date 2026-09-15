@@ -245,7 +245,7 @@ applyActivePartyToCombatSlots();
 // distance) et lettre affichée sur le carré changent, pas le reste du moteur de combat (évitement,
 // riposte passive, etc., déjà génériques).
 const ENCOUNTERS = [
-  { name: 'Gobelin', label: 'G', color: '#8bc34a', size: 44, hpMax: 250, statValue: 10, combat: { melee: true, stat: 'force' }, hasBombAttack: true },
+  { name: 'Gobelin', label: 'G', color: '#8bc34a', size: 44, hpMax: 1500, statValue: 10, combat: { melee: true, stat: 'force' }, hasBombAttack: true },
   { name: 'Archer squelette', label: 'A', color: '#cfd8dc', size: 52, hpMax: 400, statValue: 16, combat: { melee: false, stat: 'force' } },
   { name: 'Brute orque', label: 'O', color: '#795548', size: 64, hpMax: 800, statValue: 26, combat: { melee: true, stat: 'force' } },
   { name: 'Sorcière', label: 'S', color: '#ab47bc', size: 50, hpMax: 600, statValue: 22, combat: { melee: false, stat: 'force' } },
@@ -451,7 +451,7 @@ const BOMB_INTERVAL_MS = 10000;
 const BOMB_FUSE_MS = 2000;
 const BOMB_RADIUS = 70;
 const BOMB_DAMAGE = 50;
-const BOMB_DASH_SPEED_MULTIPLIER = 4;
+const BOMB_DASH_SPEED_MULTIPLIER = 3;
 let activeBombs = [];
 let nextBombId = 1;
 
