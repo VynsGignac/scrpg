@@ -2448,6 +2448,32 @@ function drawDpsHud(now) {
   ctx.fillText(text, canvas.width / 2, y);
 }
 
+// Bouton "Quitter" de l'entraînement (demande utilisateur explicite) : affiche le même écran de
+// résumé qu'une fin de combat normale (voir drawCombatEndScreen, adapté pour l'entraînement --
+// titre neutre, boutons qui relancent l'entraînement/retournent à la Guilde plutôt qu'au Monde).
+// L'entraînement ne se termine jamais tout seul (mannequin increvable, voir checkCombatOutcome),
+// donc c'est le seul moyen d'accéder à ce résumé pendant une session.
+function drawTrainingExitButton() {
+  const buttonWidth = 76;
+  const buttonHeight = 30;
+  const x = canvas.width - buttonWidth - 10;
+  const y = TOP_BANNER_HEIGHT + 8;
+
+  ctx.fillStyle = '#37474f';
+  ctx.fillRect(x, y, buttonWidth, buttonHeight);
+  ctx.strokeStyle = '#ffd54f88';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x + 0.5, y + 0.5, buttonWidth - 1, buttonHeight - 1);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = 'bold 12px sans-serif';
+  ctx.fillStyle = '#ffd54f';
+  ctx.fillText('Quitter', x + buttonWidth / 2, y + buttonHeight / 2 + 1);
+  registerHitRect(x, y, buttonWidth, buttonHeight, () => {
+    combatPhase = 'victory'; // affiche le résumé -- voir drawCombatEndScreen
+  });
+}
+
 // Panneau d'ordre de menace : s'affiche au clic sur un ennemi (voir pointerup), liste les
 // personnages du joueur du plus menaçant au moins menaçant vis-à-vis de LUI. Juste la lettre de
 // classe (voir character.label) plutôt que le prénom complet, demande utilisateur explicite.
@@ -2516,8 +2542,15 @@ function drawCombatEndScreen(now) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'alphabetic';
   ctx.font = 'bold 30px sans-serif';
-  ctx.fillStyle = victory ? '#66bb6a' : '#ef5350';
-  ctx.fillText(victory ? 'VICTOIRE' : 'DÉFAITE', canvas.width / 2, TOP_BANNER_HEIGHT + 42);
+  // En entraînement (bouton "Quitter", voir drawTrainingExitButton), le mannequin n'est jamais
+  // vraiment vaincu -- un titre neutre plutôt que "VICTOIRE" évite l'affichage trompeur.
+  if (isTrainingCombat) {
+    ctx.fillStyle = '#ffd54f';
+    ctx.fillText('RÉSUMÉ', canvas.width / 2, TOP_BANNER_HEIGHT + 42);
+  } else {
+    ctx.fillStyle = victory ? '#66bb6a' : '#ef5350';
+    ctx.fillText(victory ? 'VICTOIRE' : 'DÉFAITE', canvas.width / 2, TOP_BANNER_HEIGHT + 42);
+  }
 
   const cardX = LIST_PADDING_X;
   const cardWidth = canvas.width - LIST_PADDING_X * 2;
@@ -2614,16 +2647,21 @@ function drawCombatEndScreen(now) {
   ctx.textBaseline = 'middle';
   ctx.font = 'bold 14px sans-serif';
   ctx.fillStyle = '#ffffff';
+  // En entraînement : "Rejouer" relance l'entraînement (pas un vrai combat de donjon) et le retour
+  // se fait vers la Guilde (d'où l'entraînement se lance), pas vers la carte du Monde.
   ctx.fillText('Rejouer', cardX + buttonWidth / 2, y + buttonHeight / 2 + 1);
-  registerHitRect(cardX, y, buttonWidth, buttonHeight, () => enterCombatLevel(currentWorldLevel));
+  registerHitRect(cardX, y, buttonWidth, buttonHeight, () => {
+    if (isTrainingCombat) enterTrainingCombat();
+    else enterCombatLevel(currentWorldLevel);
+  });
 
   const secondX = cardX + buttonWidth + 12;
   ctx.fillStyle = '#37474f';
   ctx.fillRect(secondX, y, buttonWidth, buttonHeight);
   ctx.fillStyle = '#ffffff';
-  ctx.fillText('Retour à la carte', secondX + buttonWidth / 2, y + buttonHeight / 2 + 1);
+  ctx.fillText(isTrainingCombat ? 'Retour à la Guilde' : 'Retour à la carte', secondX + buttonWidth / 2, y + buttonHeight / 2 + 1);
   registerHitRect(secondX, y, buttonWidth, buttonHeight, () => {
-    currentScene = 'monde';
+    currentScene = isTrainingCombat ? 'guilde' : 'monde';
   });
 }
 
@@ -3764,7 +3802,10 @@ function draw() {
         : character.y - character.size / 2 - 48; // au-dessus du nom/barre de vie déjà affichés
       drawStatusBadges(character, bottomY);
     }
-    if (isTrainingCombat) drawDpsHud(performance.now());
+    if (isTrainingCombat && combatPhase !== 'victory' && combatPhase !== 'defeat') {
+      drawDpsHud(performance.now());
+      drawTrainingExitButton();
+    }
 
     // Trait pointillé de l'ennemi vers sa cible (voir updateEnemyAI) -- juste pour que le joueur
     // comprenne qui il poursuit, ne pilote aucune logique.
