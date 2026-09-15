@@ -78,6 +78,13 @@ const CLASS_SPRITES = {
   Barbare: loadClassSprites('barbare'),
   Mage: loadClassSprites('mage'),
   Voleur: loadClassSprites('voleur'),
+  Pyromane: loadClassSprites('pyromane'),
+  Chasseur: loadClassSprites('chasseur'),
+  Druide: loadClassSprites('druide'),
+  'Prêtre': loadClassSprites('pretre'),
+  Sorcier: loadClassSprites('sorcier'),
+  Chaman: loadClassSprites('chaman'),
+  Gardien: loadClassSprites('gardien'),
 };
 // 50% plus gros que l'emprise réelle du personnage (demande utilisateur explicite) -- seul
 // l'affichage grossit, tout le reste (barre de PV, badges, hit-box, déplacement...) reste basé sur
