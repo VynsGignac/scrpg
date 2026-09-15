@@ -53,25 +53,31 @@ function drawCombatBackground() {
   ctx.drawImage(combatBackgroundImage, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
 }
 
-// Sprites de classe (demande utilisateur explicite, image fournie par l'utilisateur -- fond noir
+// Sprites de classe (demande utilisateur explicite, images fournies par l'utilisateur -- fond noir
 // d'origine déjà rendu transparent) : plusieurs poses par classe pour refléter la direction de
-// déplacement/attaque (voir spriteForCharacter) -- pour l'instant seul le Guerrier en a. "cote"
-// (3/4) sert au déplacement latéral, "attaque" (profil) à l'attaque latérale ; "face"/"dos" n'ont
-// chacun qu'une seule pose (pas d'art séparé pour l'attaque de face/dos dans l'image fournie). Les
-// poses latérales ne font face qu'à gauche dans l'image d'origine -- réutilisées pour la droite en
-// les retournant à l'affichage (voir drawCharacter) plutôt que de dupliquer les fichiers.
+// déplacement/attaque (voir spriteForCharacter). "cote" (3/4) sert au déplacement latéral,
+// "attaque" (profil) à l'attaque latérale ; "face"/"dos" n'ont chacun qu'une seule pose (pas d'art
+// séparé pour l'attaque de face/dos dans les images fournies). Les poses latérales ne font face
+// qu'à gauche dans les images d'origine -- réutilisées pour la droite en les retournant à
+// l'affichage (voir drawCharacter) plutôt que de dupliquer les fichiers.
 function loadSprite(src) {
   const img = new Image();
   img.src = src;
   return img;
 }
+function loadClassSprites(prefix) {
+  return {
+    face: loadSprite(`img/${prefix}.png`),
+    dos: loadSprite(`img/${prefix}-dos.png`),
+    cote: loadSprite(`img/${prefix}-cote.png`),
+    attaque: loadSprite(`img/${prefix}-attaque.png`),
+  };
+}
 const CLASS_SPRITES = {
-  Guerrier: {
-    face: loadSprite('img/guerrier.png'),
-    dos: loadSprite('img/guerrier-dos.png'),
-    cote: loadSprite('img/guerrier-cote.png'),
-    attaque: loadSprite('img/guerrier-attaque.png'),
-  },
+  Guerrier: loadClassSprites('guerrier'),
+  Barbare: loadClassSprites('barbare'),
+  Mage: loadClassSprites('mage'),
+  Voleur: loadClassSprites('voleur'),
 };
 // 50% plus gros que l'emprise réelle du personnage (demande utilisateur explicite) -- seul
 // l'affichage grossit, tout le reste (barre de PV, badges, hit-box, déplacement...) reste basé sur
