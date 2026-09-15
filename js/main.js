@@ -165,17 +165,23 @@ function createEmptyEquipment() {
 }
 
 // ------------------------------------------------------------
-// Guilde (voir scène "Guilde") : le joueur possède les 11 classes (roster), mais seules 4 partent
-// en donjon à la fois (activePartyIndices, choisi sur cette scène). Les carrés de combat
-// (characters, plus bas) ne sont pas des personnages figés : ce sont 4 "emplacements" dans
-// lesquels on branche l'entrée du roster choisie -- appliqué à chaque nouveau combat (voir
+// Guilde (voir scène "Guilde") : le joueur possède les 11 classes (roster), mais 1 à 4 seulement
+// partent en donjon à la fois (activePartyIndices, choisi sur cette scène). Les carrés de combat
+// (characters, plus bas) ne sont pas des personnages figés : characters ne contient QUE les
+// personnages d'activePartyIndices (aucun repli sur un personnage du roster non choisi -- demande
+// utilisateur explicite) -- rebranché à chaque nouveau combat (voir
 // applyActivePartyToCombatSlots/resetCombatEncounter), comme l'unique ennemi est déjà reconfiguré
-// à chaque rond de la carte du Monde. Les 4 joueurs (humains simulés), eux, restent attachés à
-// leur emplacement (pas à un personnage précis) : ils louent celui qu'on y place.
+// à chaque rond de la carte du Monde. Les 4 joueurs (humains simulés), eux, existent toujours tous
+// les 4 mais ne sont affichés dans la scène Joueur que s'ils louent un emplacement effectivement
+// occupé (character.index correspondant, voir drawPlayerScene).
 // ------------------------------------------------------------
 const PARTY_SIZE = 4;
 const SLOT_SPACING = 100;
-const squareXs = Array.from({ length: PARTY_SIZE }, (_, i) => cx + (i - (PARTY_SIZE - 1) / 2) * SLOT_SPACING);
+// Centre les emplacements occupés quel que soit leur nombre (1 à PARTY_SIZE) -- avec 4
+// sélectionnés, identique à l'ancien tableau fixe squareXs.
+function squareXFor(slot, count) {
+  return cx + (slot - (count - 1) / 2) * SLOT_SPACING;
+}
 
 // Socle de mana commun à tout le monde, même à 0 en Savoir (Voleur/Chasseur/Mage/Pyromane/
 // Sorcier) -- sans ça, ces classes ne pourraient plus jamais lancer AUCUNE compétence dès que
@@ -213,23 +219,31 @@ let activePartyIndices = shuffle(roster.map((c) => c.rosterId)).slice(0, PARTY_S
 
 const characters = [];
 
-// Branche le groupe actif (voir activePartyIndices, modifié depuis la scène Guilde) sur les 4
+// Branche le groupe actif (voir activePartyIndices, modifié depuis la scène Guilde) sur les
 // emplacements de combat -- rappelé à chaque nouveau combat (voir resetCombatEncounter), donc un
 // changement de composition dans la Guilde ne prend effet qu'au prochain donjon lancé, jamais en
-// pleine bataille.
+// pleine bataille. Ne branche QUE les personnages réellement sélectionnés (1 à PARTY_SIZE, jamais
+// de repli sur un personnage du roster non choisi -- demande utilisateur explicite : sélectionner
+// 1 seul personnage ne doit faire apparaître que lui, pas 3 "morts" en plus). Les entités non
+// contrôlées par le joueur (l'ennemi, poussé une seule fois dans characters au chargement) restent
+// toujours présentes, à leur place, jamais touchées ici.
 function applyActivePartyToCombatSlots() {
-  for (let slot = 0; slot < PARTY_SIZE; slot++) {
-    const rosterChar = roster[activePartyIndices[slot]] || roster[slot];
+  const nonPlayerEntities = characters.filter((c) => !c.playerControlled);
+  characters.length = 0;
+  activePartyIndices.forEach((rosterId, slot) => {
+    const rosterChar = roster[rosterId];
     rosterChar.index = slot + 1;
-    characters[slot] = rosterChar;
-  }
+    characters.push(rosterChar);
+  });
+  characters.push(...nonPlayerEntities);
 }
 applyActivePartyToCombatSlots();
 
 // Les 5 combats de la carte du Monde (voir drawWorldScene) : un seul emplacement d'ennemi existe
-// dans le jeu (characters[PARTY_SIZE]), reconfiguré à chaque rond choisi (voir resetCombatEncounter) --
-// taille, PV, couleur, dégâts (melee ou à distance) et lettre affichée sur le carré changent,
-// pas le reste du moteur de combat (évitement, riposte passive, etc., déjà génériques).
+// dans le jeu (toujours dernier dans characters, voir applyActivePartyToCombatSlots), reconfiguré
+// à chaque rond choisi (voir resetCombatEncounter) -- taille, PV, couleur, dégâts (melee ou à
+// distance) et lettre affichée sur le carré changent, pas le reste du moteur de combat (évitement,
+// riposte passive, etc., déjà génériques).
 const ENCOUNTERS = [
   { name: 'Gobelin', label: 'G', color: '#8bc34a', size: 44, hpMax: 250, statValue: 10, combat: { melee: true, stat: 'force' } },
   { name: 'Archer squelette', label: 'A', color: '#cfd8dc', size: 52, hpMax: 400, statValue: 16, combat: { melee: false, stat: 'force' } },
@@ -2557,10 +2571,10 @@ function drawCombatEndScreen(now) {
   const rowHeight = 44;
   let y = TOP_BANNER_HEIGHT + 60;
 
-  // Exclut les emplacements de complément d'un entraînement à moins de PARTY_SIZE personnages
-  // (voir resetPlayerCombatState/trainingInert) -- seuls ceux réellement sélectionnés apparaissent,
-  // qu'il y en ait 1 ou 4.
-  for (const character of characters.filter((c) => c.playerControlled && !c.trainingInert)) {
+  // characters ne contient plus que les personnages réellement sélectionnés (voir
+  // applyActivePartyToCombatSlots) -- qu'il y en ait 1 ou PARTY_SIZE, tous y figurent, sans
+  // emplacement de complément à exclure.
+  for (const character of characters.filter((c) => c.playerControlled)) {
     const stats = combatStats[character.index] || { dealt: { total: 0, bySkill: {}, byEnemy: {} }, taken: { total: 0, bySkill: {}, byEnemy: {} } };
     const expanded = expandedStatsCharacter === character;
 
@@ -3396,23 +3410,18 @@ function resetTransientCombatState(entity) {
   entity.rempartExpiresAt = 0;
 }
 
-// Remet les 4 personnages en place au début d'un combat (PV/mana pleins, plus d'effets ni de
-// menace résiduels...) -- commun à un donjon normal (resetCombatEncounter) et à l'entraînement
-// (enterTrainingCombat), seule la configuration de l'ennemi diffère entre les deux.
-// onlySelected (entraînement uniquement, demande utilisateur explicite) : si le roster n'a QUE
-// certains personnages sélectionnés (moins que PARTY_SIZE), applyActivePartyToCombatSlots comble
-// quand même les emplacements restants par défaut (roster[slot]) -- pour l'entraînement, ces
-// emplacements de complément ne doivent PAS se battre à la place du joueur. On les neutralise en
-// les mettant à 0 PV, exactement comme un personnage mort (déjà ignoré partout : IA, ciblage,
-// déplacement, attaque de base... voir les gardes "hp <= 0" déjà en place), plutôt que d'introduire
-// un nouveau cas particulier. Un donjon normal (onlySelected absent/false) garde le comportement
-// habituel : toujours 4 combattants.
-function resetPlayerCombatState(onlySelected) {
-  // Rebranche le groupe actif (voir scène Guilde) sur les 4 emplacements de combat : une
+// Remet les personnages sélectionnés en place au début d'un combat (PV/mana pleins, plus d'effets
+// ni de menace résiduels...) -- commun à un donjon normal (resetCombatEncounter) et à
+// l'entraînement (enterTrainingCombat), seule la configuration de l'ennemi diffère entre les deux.
+// Toujours exactement les personnages d'activePartyIndices (1 à PARTY_SIZE, voir
+// applyActivePartyToCombatSlots) : aucun emplacement de complément à neutraliser.
+function resetPlayerCombatState() {
+  // Rebranche le groupe actif (voir scène Guilde) sur les emplacements de combat : une
   // composition changée depuis la dernière bataille ne prend effet qu'à partir d'ici.
   applyActivePartyToCombatSlots();
 
   let i = 0;
+  const count = characters.filter((c) => c.playerControlled).length;
   for (const character of characters) {
     if (!character.playerControlled) continue;
     character.hp = character.hpMax;
@@ -3427,13 +3436,8 @@ function resetPlayerCombatState(onlySelected) {
     character.lastAutoSkillAt = 0;
     character.selected = false;
     resetTransientCombatState(character);
-    character.x = squareXs[i];
+    character.x = squareXFor(i, count);
     character.y = cy;
-    // Marqué distinctement d'un simple "mort" (hp<=0) : un vrai personnage tombé au combat doit
-    // quand même apparaître dans le résumé de fin (voir drawCombatEndScreen), alors qu'un
-    // emplacement de complément jamais sélectionné pour l'entraînement ne doit jamais y figurer.
-    character.trainingInert = !!(onlySelected && i >= activePartyIndices.length);
-    if (character.trainingInert) character.hp = 0;
     i += 1;
   }
 }
@@ -3504,7 +3508,7 @@ function enterTrainingCombat() {
     enemy.y = spawn.y;
   }
 
-  resetPlayerCombatState(true);
+  resetPlayerCombatState();
   combatStats = createCombatStats();
   currentScene = 'combat';
 }
