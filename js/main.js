@@ -275,8 +275,8 @@ applyActivePartyToCombatSlots();
 // bonus de proximité).
 const ENCOUNTERS = [
   { name: 'Gobelin', label: 'G', color: '#8bc34a', size: 33, hpMax: 1500, statValue: 10, combat: { melee: true, stat: 'force' }, bombAttack: { targeting: 'noAggroPlayer', count: 1 } },
-  { name: 'Archer gobelin', label: 'A', color: '#cfd8dc', size: 39, hpMax: 400, statValue: 16, combat: { melee: false, stat: 'force' }, bombAttack: { targeting: 'random', count: 3 } },
-  { name: 'Artificier gobelin', label: 'Ar', color: '#f4511e', size: 48, hpMax: 800, statValue: 26, combat: { melee: true, stat: 'force' }, stationary: true, flyingBombAttack: true },
+  { name: 'Archer gobelin', label: 'A', color: '#cfd8dc', size: 39, hpMax: 2000, statValue: 16, combat: { melee: false, stat: 'force' }, bombAttack: { targeting: 'random', count: 3 } },
+  { name: 'Artificier gobelin', label: 'Ar', color: '#f4511e', size: 48, hpMax: 2000, statValue: 26, combat: { melee: true, stat: 'force' }, stationary: true, flyingBombAttack: true },
   { name: 'Sorcière', label: 'S', color: '#ab47bc', size: 38, hpMax: 600, statValue: 22, combat: { melee: false, stat: 'force' } },
   { name: 'Seigneur des ombres', label: 'B', color: '#c62828', size: 57, hpMax: 5000, statValue: 30, combat: { melee: true, stat: 'force' }, isBoss: true },
 ];
@@ -609,9 +609,12 @@ function updateBombAttack(enemy, now) {
 // ------------------------------------------------------------
 const ARTIFICIER_BOMB_BASE_MS = 4000;
 const ARTIFICIER_PROXIMITY_BONUS_MS = 3000;
-const ARTIFICIER_PROXIMITY_RADIUS = 220;
+const ARTIFICIER_PROXIMITY_RADIUS = 110; // 220 * 50% (demande utilisateur explicite)
 const FLYING_BOMB_HP = 100;
-const FLYING_BOMB_SPEED = 0.2; // px/ms
+// Vitesse calculée par bombe (voir launchFlyingBomb) plutôt que fixe : met TOUJOURS
+// FLYING_BOMB_TRAVEL_MS à traverser l'écran quelle que soit la distance à parcourir (donc quelle
+// que soit la taille de l'écran) -- demande utilisateur explicite : "10s pour traverser l'écran".
+const FLYING_BOMB_TRAVEL_MS = 10000;
 const FLYING_BOMB_DAMAGE = 50;
 const FLYING_BOMB_SIZE = 26;
 // Bleu (demande utilisateur explicite) -- distinct du noir des bombes au sol (BOMB_COLOR_RGB).
@@ -625,10 +628,11 @@ function launchFlyingBomb(enemy) {
   const targetX = Math.random() * canvas.width;
   const targetY = canvas.height;
   const dist = Math.hypot(targetX - enemy.x, targetY - enemy.y) || 1;
+  const speed = dist / FLYING_BOMB_TRAVEL_MS; // px/ms -- voir FLYING_BOMB_TRAVEL_MS ci-dessus
   flyingBombs.push({
     id: nextFlyingBombId++,
     x: enemy.x, y: enemy.y,
-    vx: (targetX - enemy.x) / dist, vy: (targetY - enemy.y) / dist,
+    vx: (targetX - enemy.x) / dist * speed, vy: (targetY - enemy.y) / dist * speed,
     hp: FLYING_BOMB_HP, hpMax: FLYING_BOMB_HP, size: FLYING_BOMB_SIZE,
     playerControlled: false, name: 'Bombe volante', label: '💣',
     source: enemy,
@@ -661,8 +665,8 @@ function updateFlyingBombs(dt, now) {
       bomb.destroyedAt = now; // détruite en vol : rien ne se passe (demande utilisateur explicite)
       continue;
     }
-    bomb.x += bomb.vx * FLYING_BOMB_SPEED * dt;
-    bomb.y += bomb.vy * FLYING_BOMB_SPEED * dt;
+    bomb.x += bomb.vx * dt;
+    bomb.y += bomb.vy * dt;
     if (bomb.y >= canvas.height) {
       bomb.explodedAt = now;
       for (const character of characters) {
@@ -2543,11 +2547,16 @@ function drawBomb(bomb, now) {
 // puisque la bombe porte les mêmes champs x/y/size/hp/hpMax) pour montrer qu'elle est
 // attaquable/destructible en vol.
 function drawFlyingBomb(bomb) {
+  // vx/vy encodent maintenant une vraie vitesse (px/ms, voir launchFlyingBomb), plus un simple
+  // vecteur unitaire -- normalisé ici pour garder une traînée de longueur fixe à l'écran.
+  const speed = Math.hypot(bomb.vx, bomb.vy) || 1;
+  const dirX = bomb.vx / speed, dirY = bomb.vy / speed;
+
   ctx.save();
   ctx.strokeStyle = `rgba(${FLYING_BOMB_COLOR_RGB}, 0.55)`;
   ctx.lineWidth = 3;
   ctx.beginPath();
-  ctx.moveTo(bomb.x - bomb.vx * 28, bomb.y - bomb.vy * 28);
+  ctx.moveTo(bomb.x - dirX * 28, bomb.y - dirY * 28);
   ctx.lineTo(bomb.x, bomb.y);
   ctx.stroke();
   ctx.restore();
