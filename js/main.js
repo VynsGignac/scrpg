@@ -53,6 +53,13 @@ function drawCombatBackground() {
   ctx.drawImage(combatBackgroundImage, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
 }
 
+// Sprites de classe (demande utilisateur explicite, image fournie par l'utilisateur -- fond noir
+// d'origine déjà rendu transparent) : table pour permettre d'en ajouter facilement d'autres plus
+// tard. Dessiné à la place du carré uni dans drawCharacter dès que prêt, sinon repli silencieux
+// sur le carré uni existant (comme pour combatBackgroundImage ci-dessus).
+const CLASS_SPRITES = { Guerrier: new Image() };
+CLASS_SPRITES.Guerrier.src = 'img/guerrier.png';
+
 // Bandeau de navigation en haut de l'écran, toujours visible quelle que soit la scène active :
 // un bouton par scène. "Combat" n'y figure plus (demande utilisateur explicite) : on y arrive
 // uniquement en cliquant un rond de la carte du Monde (voir enterCombatLevel) -- currentScene
@@ -2680,8 +2687,18 @@ function drawCharacter(character) {
     ctx.strokeRect(character.x - half - 6, character.y - half - 6, character.size + 12, character.size + 12);
   }
   const dead = character.hp <= 0;
-  ctx.fillStyle = dead ? '#4a4a4a' : character.color;
-  ctx.fillRect(character.x - half, character.y - half, character.size, character.size);
+  const sprite = CLASS_SPRITES[character.className];
+  const spriteReady = !dead && sprite && sprite.complete && sprite.naturalWidth;
+  if (spriteReady) {
+    // Mis à l'échelle pour tenir dans le carré (proportions conservées, pas déformé) -- même
+    // emprise que le carré uni, pour ne rien décaler (barre de PV, badges de statut...).
+    const scale = Math.min(character.size / sprite.naturalWidth, character.size / sprite.naturalHeight);
+    const dw = sprite.naturalWidth * scale, dh = sprite.naturalHeight * scale;
+    ctx.drawImage(sprite, character.x - dw / 2, character.y - dh / 2, dw, dh);
+  } else {
+    ctx.fillStyle = dead ? '#4a4a4a' : character.color;
+    ctx.fillRect(character.x - half, character.y - half, character.size, character.size);
+  }
 
   // Bouclier actif (Mur sacré) : fin liseré bleuté autour du personnage tant qu'il tient.
   if (!dead && character.shieldHp > 0) {
@@ -2721,7 +2738,7 @@ function drawCharacter(character) {
     ctx.moveTo(character.x + half - inset, character.y - half + inset);
     ctx.lineTo(character.x - half + inset, character.y + half - inset);
     ctx.stroke();
-  } else if (character.label) {
+  } else if (character.label && !spriteReady) {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.font = `bold ${Math.round(character.size * 0.5)}px sans-serif`;
