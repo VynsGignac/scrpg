@@ -482,10 +482,10 @@ const BOMB_INTERVAL_MS = 10000;
 const BOMB_FUSE_MS = 5000;
 const BOMB_RADIUS = 70;
 const BOMB_DAMAGE = 50;
-// Bleu (demande utilisateur explicite) -- distinct du vert du Gobelin et du gris de l'Archer
-// gobelin, partagé par toutes les bombes (au sol et volante) pour rester cohérent.
-const BOMB_COLOR_RGB = '33, 150, 243';
-const BOMB_ACCENT_RGB = '129, 212, 250'; // anneau de mèche/traînée, plus clair pour rester lisible
+// Bombes au sol (Gobelin/Archer gobelin) en noir -- la bombe volante de l'Artificier gobelin, elle,
+// reste en bleu (FLYING_BOMB_COLOR_RGB, plus bas) : deux couleurs distinctes demandées explicitement.
+const BOMB_COLOR_RGB = '20, 20, 20';
+const BOMB_ACCENT_RGB = '224, 224, 224'; // anneau de mèche : clair, pour rester lisible sur fond noir
 // x2 la vitesse de base actuelle (0.045, voir PIXELS_PER_MS) = 0.09, la valeur de vitesse d'avant
 // le ralentissement global 2x (demande utilisateur explicite : "2 fois plus vite, valeur précédente").
 const BOMB_DASH_SPEED_MULTIPLIER = 2;
@@ -593,6 +593,8 @@ const FLYING_BOMB_HP = 100;
 const FLYING_BOMB_SPEED = 0.2; // px/ms
 const FLYING_BOMB_DAMAGE = 50;
 const FLYING_BOMB_SIZE = 26;
+// Bleu (demande utilisateur explicite) -- distinct du noir des bombes au sol (BOMB_COLOR_RGB).
+const FLYING_BOMB_COLOR_RGB = '33, 150, 243';
 let flyingBombs = [];
 let nextFlyingBombId = 1;
 
@@ -644,7 +646,7 @@ function updateFlyingBombs(dt, now) {
       bomb.explodedAt = now;
       for (const character of characters) {
         if (!character.playerControlled || character.hp <= 0) continue;
-        dealDamage(character, FLYING_BOMB_DAMAGE, BOMB_COLOR_RGB, bomb.source, false, 'Bombe volante');
+        dealDamage(character, FLYING_BOMB_DAMAGE, FLYING_BOMB_COLOR_RGB, bomb.source, false, 'Bombe volante');
       }
     }
   }
@@ -2521,7 +2523,7 @@ function drawBomb(bomb, now) {
 // attaquable/destructible en vol.
 function drawFlyingBomb(bomb) {
   ctx.save();
-  ctx.strokeStyle = `rgba(${BOMB_COLOR_RGB}, 0.55)`;
+  ctx.strokeStyle = `rgba(${FLYING_BOMB_COLOR_RGB}, 0.55)`;
   ctx.lineWidth = 3;
   ctx.beginPath();
   ctx.moveTo(bomb.x - bomb.vx * 28, bomb.y - bomb.vy * 28);
