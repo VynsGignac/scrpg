@@ -202,7 +202,9 @@ const CLASS_STATS = {
 };
 
 function statsForClass(className) {
-  return { ...(CLASS_STATS[className] || { force: 8, agilite: 8, endurance: 8, intelligence: 8, savoir: 8 }) };
+  // Hâte (nouvelle caractéristique, voir HASTE_CAP plus bas) : tout le monde commence à 0, quelle
+  // que soit la classe (demande utilisateur explicite) -- jamais dans CLASS_STATS ci-dessus.
+  return { ...(CLASS_STATS[className] || { force: 8, agilite: 8, endurance: 8, intelligence: 8, savoir: 8 }), hate: 0 };
 }
 
 // Emplacements d'équipement d'un personnage (voir drawRosterCharacterDetail pour leur affichage,
@@ -248,6 +250,7 @@ const ITEM_RARITY_BY_KEY = Object.fromEntries(ITEM_RARITIES.map((r) => [r.key, r
 
 const ITEM_STAT_LABELS = {
   force: 'Force', agilite: 'Agilité', endurance: 'Endurance', intelligence: 'Intelligence', savoir: 'Savoir',
+  hate: 'Hâte',
 };
 const ITEM_STAT_KEYS = Object.keys(ITEM_STAT_LABELS);
 
@@ -469,6 +472,34 @@ const DEFAULT_COMBAT = { melee: true, stat: 'force' };
 // CLASS_COMBAT.range, ex. Chasseur) via rangeFor() ci-dessous plutôt que cette constante brute.
 const RANGED_ATTACK_RANGE = 220;
 const ATTACK_INTERVAL_MS = 2000;
+
+// ------------------------------------------------------------
+// Hâte (nouvelle caractéristique, demande utilisateur explicite) : accélère l'attaque de base et
+// réduit les cooldowns de compétence. Tout le monde commence à 0 (voir statsForClass) -- seuls les
+// objets peuvent en donner pour l'instant (voir ITEM_STAT_LABELS). Courbe dégressive (racine
+// carrée : gain marginal décroissant à mesure que la hâte augmente) qui atteint tout juste son
+// maximum -- +100% vitesse d'attaque, -50% cooldown -- à HASTE_CAP (200), jamais au-delà (la hâte
+// au-delà de ce plafond ne sert donc plus à rien).
+// ------------------------------------------------------------
+const HASTE_CAP = 200;
+const HASTE_MAX_ATTACK_SPEED_BONUS = 1; // +100% à HASTE_CAP
+const HASTE_MAX_CDR = 0.5; // -50% à HASTE_CAP
+
+function hasteFactor(character) {
+  const haste = Math.max(0, Math.min(HASTE_CAP, (character.stats && character.stats.hate) || 0));
+  return Math.sqrt(haste / HASTE_CAP);
+}
+
+// >1 : accélère l'attaque de base (voir updateCombat, où un intervalle plus long ralentit et un
+// plus court accélère -- diviser par ce multiplicateur raccourcit donc l'intervalle).
+function attackSpeedMultiplier(character) {
+  return 1 + HASTE_MAX_ATTACK_SPEED_BONUS * hasteFactor(character);
+}
+
+// Fraction de réduction (0 à 0.5) à appliquer au cooldown d'un sort (voir castSkill).
+function cooldownReductionFactor(character) {
+  return HASTE_MAX_CDR * hasteFactor(character);
+}
 
 // Portée effective d'un personnage à distance : celle de sa classe si elle en définit une
 // (CLASS_COMBAT.range), sinon la portée par défaut commune à toutes les autres.
@@ -936,9 +967,12 @@ function updateCombat(character, now) {
   }
   if (character.isMoving) return;
   if ((character.stunnedUntil || 0) > now) return; // étourdi (Gel) : ne peut pas non plus attaquer
-  // Cadence d'attaque ralentie (Éclat de glace).
+  // Cadence d'attaque ralentie (Éclat de givre) et accélérée par la Hâte (voir
+  // attackSpeedMultiplier) -- les deux se combinent (un ralentissement n'annule pas le bonus de
+  // Hâte déjà acquis, et inversement).
   const atkMultiplier = (character.atkSlowUntil || 0) > now ? (character.atkSlowMultiplier || 1) : 1;
-  if (now - (character.lastAttackAt || 0) < ATTACK_INTERVAL_MS * atkMultiplier) return;
+  const effectiveAttackInterval = (ATTACK_INTERVAL_MS * atkMultiplier) / attackSpeedMultiplier(character);
+  if (now - (character.lastAttackAt || 0) < effectiveAttackInterval) return;
 
   character.lastAttackAt = now;
   const combat = combatProfile(character);
@@ -2162,7 +2196,8 @@ function castSkill(character, skillId) {
 
   character.mana -= SKILL_MANA_COST;
   if (!character.cooldowns) character.cooldowns = {};
-  character.cooldowns[skillId] = now + skill.cooldownMs;
+  // Réduit par la Hâte (voir cooldownReductionFactor, jusqu'à -50% à 200 de Hâte).
+  character.cooldowns[skillId] = now + skill.cooldownMs * (1 - cooldownReductionFactor(character));
   return true;
 }
 
@@ -3718,12 +3753,15 @@ function drawPlayerScene() {
 // Scène "Personnage" : la liste des personnages loués (classe, niveau, caractéristiques). Simple
 // affichage pour l'instant -- pas encore de points à répartir ici, contrairement aux compétences
 // du joueur ci-dessus.
+// 3e élément optionnel : max de la barre propre à cette ligne (sinon STAT_MAX) -- la Hâte évolue
+// sur une échelle bien plus large (HASTE_CAP=200) que les autres caractéristiques (0-20 environ).
 const STAT_ROWS = [
   ['Force', 'force'],
   ['Agilité', 'agilite'],
   ['Endurance', 'endurance'],
   ['Intelligence', 'intelligence'],
   ['Savoir', 'savoir'],
+  ['Hâte', 'hate', HASTE_CAP],
 ];
 const STAT_MAX = 20;
 let expandedRosterCharacter = null; // personnage du roster dont le détail est déplié
@@ -3749,7 +3787,7 @@ function drawRosterCharacterDetail(character, x, y, width) {
   const valueColWidth = 28;
   const barX = x + labelWidth;
   const barWidth = width - labelWidth - valueColWidth;
-  for (const [label, key] of STAT_ROWS) {
+  for (const [label, key, rowMax] of STAT_ROWS) {
     const value = character.stats[key];
     ctx.font = '12px sans-serif';
     ctx.fillStyle = '#ffffffcc';
@@ -3757,7 +3795,7 @@ function drawRosterCharacterDetail(character, x, y, width) {
     ctx.fillStyle = '#ffffff14';
     ctx.fillRect(barX, rowY, barWidth, 10);
     ctx.fillStyle = character.color;
-    ctx.fillRect(barX, rowY, barWidth * Math.min(value / STAT_MAX, 1), 10);
+    ctx.fillRect(barX, rowY, barWidth * Math.min(value / (rowMax || STAT_MAX), 1), 10);
     ctx.textAlign = 'right';
     ctx.fillText(String(value), x + width, rowY + 9);
     ctx.textAlign = 'left';
