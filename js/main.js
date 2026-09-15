@@ -2334,6 +2334,77 @@ function drawEnemyHealthBar(enemy) {
   ctx.fillText(`${Math.max(enemy.hp, 0)}/${enemy.hpMax}`, enemy.x, barY - 3);
 }
 
+// ------------------------------------------------------------------
+// Indicateurs de buff/debuff (demande utilisateur explicite : "rage, la grâce etc" doivent être
+// visibles au-dessus des carrés, joueurs ET ennemis) -- une seule liste générique couvre les
+// ressources à stacks propres à certaines classes (Rage, Grâce, Rempart, brûlure, poison) et tous
+// les effets temporaires à minuteur déjà en place ailleurs dans le code (bouclier, ralentissement,
+// étourdissement, esquive, provocation, marque, malédiction, déphasage...), sans avoir à ajouter
+// un système séparé par effet.
+// ------------------------------------------------------------------
+function activeStatusBadges(character, now) {
+  const badges = [];
+
+  if (character.rage > 0) badges.push({ text: `Rage ${character.rage}`, rgb: '158, 158, 158' });
+  if (character.priestGraceStacks > 0) badges.push({ text: `Grâce ${character.priestGraceStacks}`, rgb: '245, 245, 245' });
+  if (character.rempartStacks > 0) badges.push({ text: `Rempart ${character.rempartStacks}`, rgb: '84, 110, 122' });
+  if (character.pyroBurnStacks > 0) badges.push({ text: `Brûlure ${character.pyroBurnStacks}`, rgb: '255, 87, 34' });
+  if (character.poisonStacks > 0) badges.push({ text: `Poison ${character.poisonStacks}`, rgb: '124, 179, 66' });
+
+  if (character.shieldHp > 0 && (character.shieldExpiresAt || 0) > now) {
+    badges.push({ text: `Bouclier ${character.shieldHp}`, rgb: '255, 213, 79' });
+  }
+  if ((character.damageReductionUntil || 0) > now && character.damageReductionFactor > 0) {
+    badges.push({ text: `-${Math.round(character.damageReductionFactor * 100)}% subis`, rgb: '129, 199, 132' });
+  }
+  if ((character.damageOutputUntil || 0) > now) {
+    const mult = character.damageOutputMultiplier || 1;
+    if (mult > 1) badges.push({ text: `+${Math.round((mult - 1) * 100)}% dégâts`, rgb: '255, 213, 79' });
+    else if (mult < 1) badges.push({ text: `${Math.round((mult - 1) * 100)}% dégâts`, rgb: '239, 83, 80' });
+  }
+  if ((character.damageTakenBonusUntil || 0) > now && character.damageTakenBonusFactor > 0) {
+    badges.push({ text: `+${Math.round(character.damageTakenBonusFactor * 100)}% subis`, rgb: '239, 83, 80' });
+  }
+  if ((character.dodgeUntil || 0) > now) badges.push({ text: 'Esquive', rgb: '186, 104, 200' });
+  if ((character.slowUntil || 0) > now) badges.push({ text: 'Ralenti', rgb: '79, 195, 247' });
+  if ((character.stunnedUntil || 0) > now) badges.push({ text: 'Étourdi', rgb: '129, 212, 250' });
+  if ((character.tauntUntil || 0) > now) badges.push({ text: 'Provoqué', rgb: '255, 193, 7' });
+  if ((character.huntersMarkUntil || 0) > now) badges.push({ text: 'Marqué', rgb: '139, 195, 74' });
+  if (character.cursedBy && character.cursedBy.hp > 0) badges.push({ text: 'Maudit', rgb: '81, 45, 168' });
+  if ((character.phaseUntil || 0) > now) badges.push({ text: 'Déphasé', rgb: '255, 255, 255' });
+
+  return badges;
+}
+
+// Dessine la ligne de badges centrée sur le personnage, empilée vers le haut à partir de bottomY
+// (différent pour un joueur -- juste au-dessus du carré -- ou un ennemi -- au-dessus de son nom et
+// de sa barre de vie, déjà affichés par-dessus lui, voir drawEnemyHealthBar).
+function drawStatusBadges(character, bottomY) {
+  const now = performance.now();
+  const badges = activeStatusBadges(character, now);
+  if (badges.length === 0) return;
+
+  ctx.font = 'bold 9px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const paddingX = 5;
+  const gap = 3;
+  const height = 14;
+  const widths = badges.map((b) => ctx.measureText(b.text).width + paddingX * 2);
+  const totalWidth = widths.reduce((sum, w) => sum + w, 0) + gap * (badges.length - 1);
+  let x = character.x - totalWidth / 2;
+  const y = bottomY - height;
+
+  for (let i = 0; i < badges.length; i++) {
+    const width = widths[i];
+    ctx.fillStyle = `rgba(${badges[i].rgb}, 0.85)`;
+    ctx.fillRect(x, y, width, height);
+    ctx.fillStyle = '#0b0f13';
+    ctx.fillText(badges[i].text, x + width / 2, y + height / 2 + 1);
+    x += width + gap;
+  }
+}
+
 // DPS du groupe en temps réel (voir enterTrainingCombat) : total des dégâts infligés par tous les
 // personnages (voir combatStats/recordDamageStat) divisé par le temps écoulé depuis le premier
 // coup porté (combatActiveStartAt, voir dealDamage/loop) -- 0 tant que rien n'a encore été frappé.
@@ -3636,6 +3707,13 @@ function draw() {
       if (character.playerControlled) drawCharacterBars(character);
     }
     for (const enemy of enemies) drawEnemyHealthBar(enemy);
+    for (const character of characters) {
+      if (character.hp <= 0) continue; // rien à montrer sur un cadavre
+      const bottomY = character.playerControlled
+        ? character.y - character.size / 2 - 8
+        : character.y - character.size / 2 - 48; // au-dessus du nom/barre de vie déjà affichés
+      drawStatusBadges(character, bottomY);
+    }
     if (isTrainingCombat) drawDpsHud(performance.now());
 
     // Trait pointillé de l'ennemi vers sa cible (voir updateEnemyAI) -- juste pour que le joueur
