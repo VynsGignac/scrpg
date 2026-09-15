@@ -464,10 +464,12 @@ function highestThreatPlayer(now) {
 // qui peut donc s'en écarter entre-temps.
 // ------------------------------------------------------------
 const BOMB_INTERVAL_MS = 10000;
-const BOMB_FUSE_MS = 2000;
+const BOMB_FUSE_MS = 5000;
 const BOMB_RADIUS = 70;
 const BOMB_DAMAGE = 50;
-const BOMB_DASH_SPEED_MULTIPLIER = 3;
+// x2 la vitesse de base actuelle (0.045, voir PIXELS_PER_MS) = 0.09, la valeur de vitesse d'avant
+// le ralentissement global 2x (demande utilisateur explicite : "2 fois plus vite, valeur précédente").
+const BOMB_DASH_SPEED_MULTIPLIER = 2;
 let activeBombs = [];
 let nextBombId = 1;
 
