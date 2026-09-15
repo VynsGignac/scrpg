@@ -85,6 +85,7 @@ const CLASS_SPRITES = {
   Sorcier: loadClassSprites('sorcier'),
   Chaman: loadClassSprites('chaman'),
   Gardien: loadClassSprites('gardien'),
+  Paladin: loadClassSprites('paladin'),
 };
 // 50% plus gros que l'emprise réelle du personnage (demande utilisateur explicite) -- seul
 // l'affichage grossit, tout le reste (barre de PV, badges, hit-box, déplacement...) reste basé sur
@@ -1012,6 +1013,40 @@ function drawSkillEffects(now) {
   }
 }
 
+// ------------------------------------------------------------------
+// Projectile visuel (demande utilisateur explicite) : une petite boule de la couleur du lanceur
+// (déjà définie par classe, voir CLASS_COLORS/character.color, ou celle de l'ennemi) qui file de
+// lui vers la cible -- accroché directement à dealDamage comme spawnSkillEffect ci-dessus, donc
+// couvre aussi bien l'attaque de base que les 48 sorts sans instrumenter chacun individuellement.
+// Réservé aux attaquants à distance (combatProfile non melee) : un coup de corps à corps n'a pas
+// de trajectoire à montrer.
+// ------------------------------------------------------------------
+const projectiles = [];
+const PROJECTILE_DURATION_MS = 250;
+const PROJECTILE_RADIUS = 6;
+
+function spawnProjectile(sourceX, sourceY, targetX, targetY, color) {
+  projectiles.push({ sourceX, sourceY, targetX, targetY, color, createdAt: performance.now() });
+}
+
+function updateProjectiles(now) {
+  for (let i = projectiles.length - 1; i >= 0; i--) {
+    if (now - projectiles[i].createdAt > PROJECTILE_DURATION_MS) projectiles.splice(i, 1);
+  }
+}
+
+function drawProjectiles(now) {
+  for (const p of projectiles) {
+    const t = Math.min(1, (now - p.createdAt) / PROJECTILE_DURATION_MS);
+    const x = p.sourceX + (p.targetX - p.sourceX) * t;
+    const y = p.sourceY + (p.targetY - p.sourceY) * t;
+    ctx.beginPath();
+    ctx.arc(x, y, PROJECTILE_RADIUS, 0, Math.PI * 2);
+    ctx.fillStyle = p.color;
+    ctx.fill();
+  }
+}
+
 // ------------------------------------------------------------
 // Compétences (voir bandeau de sélection, deux premières cases) : deux sorts par classe pour
 // l'instant, un clic sur la case lance le sort (pas de visée séparée -- une seule cible possible
@@ -1117,6 +1152,11 @@ function dealDamage(target, amount, rgb, source, isCrit, skillLabel) {
     `-${afterReduction}${isCrit ? '!' : ''}`, isCrit ? '255, 213, 79' : rgb
   );
   spawnSkillEffect(target.x, target.y, target.size, isCrit ? '255, 213, 79' : rgb);
+  // Pas pour les bombes (Gobelin/Archer gobelin/Artificier) : une explosion n'a pas de "tireur"
+  // à représenter par une trajectoire, même quand elle est attribuée à un ennemi à distance.
+  if (source && !combatProfile(source).melee && skillLabel !== 'Bombe' && skillLabel !== 'Bombe volante') {
+    spawnProjectile(source.x, source.y, target.x, target.y, source.color);
+  }
   // Sert à l'IA pour savoir si elle vient de se faire attaquer (voir AUTO_DEFENSIVE_SKILLS).
   if (target.playerControlled) target.lastDamageTakenAt = now;
   // Posture défensive (Guerrier) : encaisser un coup pendant qu'elle est active génère de la Rage.
@@ -4764,6 +4804,7 @@ function draw() {
     }
 
     drawSkillEffects(performance.now());
+    drawProjectiles(performance.now());
     drawFloatingTexts(performance.now());
 
     if (combatPhase === 'victory' || combatPhase === 'defeat') {
@@ -4840,6 +4881,7 @@ function loop(now) {
   }
   updateFloatingTexts(now);
   updateSkillEffects(now);
+  updateProjectiles(now);
   checkCombatOutcome();
   draw();
   requestAnimationFrame(loop);
