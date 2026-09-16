@@ -919,7 +919,11 @@ const AUTO_ABILITY_INTERVAL_MS = 1000; // délai mini entre deux compétences la
 // lui-même des bombes au sol encore actives (voir activeBombs) -- pas de la bombe volante (explose
 // sur toute la map, aucune position ne protège) ni de la zone de proximité de l'Artificier (ne
 // blesse pas, juste un délai). Réglable par joueur (0 à 10, player.skills.eviteDangers, onglet
-// Joueur, même échelle que SKILL_MAX) sur 3 axes :
+// Joueur, même échelle que SKILL_MAX) sur 4 axes :
+// - Identification de situation dangereuse : distance à laquelle une bombe est même repérée comme
+//   un danger à fuir -- à 0, seulement une fois DÉJÀ dans sa zone (DANGER_RADIUS pile) ; à 10,
+//   repérée bien avant d'y entrer (DANGER_RADIUS * (1 + DANGER_IDENTIFICATION_MAX_RADIUS_BONUS)),
+//   le temps de s'écarter avant même d'y avoir mis les pieds.
 // - Vitesse de réaction : délai après la pose d'une bombe avant de commencer à fuir (jusqu'à
 //   DANGER_REACTION_MAX_DELAY_MS à 0, quasi instantané à 10) -- mesuré depuis la pose de la bombe,
 //   pas depuis que le personnage est concerné, donc même un score de 0 finit par réagir avant que
@@ -930,6 +934,7 @@ const AUTO_ABILITY_INTERVAL_MS = 1000; // délai mini entre deux compétences la
 // - Marge de sécurité : distance gardée au-delà du rayon de la bombe (DANGER_MIN_MARGIN à 0,
 //   DANGER_MAX_MARGIN à 10) -- un score élevé s'écarte largement, pas juste pile à la limite.
 // ------------------------------------------------------------
+const DANGER_IDENTIFICATION_MAX_RADIUS_BONUS = 0.6; // détecté jusqu'à 60% plus loin que la zone réelle, à 10
 const DANGER_REACTION_MAX_DELAY_MS = 2500;
 const DANGER_DIRECTION_MAX_NOISE_RAD = Math.PI / 2; // jusqu'à 90° d'écart à score 0
 const DANGER_MIN_MARGIN = 10;
@@ -940,15 +945,16 @@ function dangerAvoidanceSkillFor(character) {
   return player ? player.skills.eviteDangers || 0 : 0;
 }
 
-// Bombe au sol active la plus proche dont la zone couvre "character" -- rien s'il n'est dans
-// aucune (pas besoin de fuir une bombe qu'on ne risque pas).
-function nearestThreateningBomb(character) {
+// Bombe au sol active la plus proche dont la zone de DÉTECTION (voir
+// DANGER_IDENTIFICATION_MAX_RADIUS_BONUS -- pas forcément sa zone de dégâts réelle) couvre
+// "character" -- rien s'il n'en a identifié aucune comme dangereuse.
+function nearestThreateningBomb(character, detectionRadius) {
   let nearest = null;
   let nearestDist = Infinity;
   for (const bomb of activeBombs) {
     if (bomb.exploded) continue;
     const dist = Math.hypot(character.x - bomb.x, character.y - bomb.y);
-    if (dist > BOMB_RADIUS || dist >= nearestDist) continue;
+    if (dist > detectionRadius || dist >= nearestDist) continue;
     nearestDist = dist;
     nearest = bomb;
   }
@@ -959,10 +965,11 @@ function nearestThreateningBomb(character) {
 // tour-ci (l'appelant doit alors lui laisser la priorité plutôt que de lancer un autre
 // déplacement par-dessus, ex. approcher un ennemi).
 function updateDangerAvoidance(character, now) {
-  const bomb = nearestThreateningBomb(character);
+  const skillFraction = Math.min(10, Math.max(0, dangerAvoidanceSkillFor(character))) / 10;
+  const detectionRadius = BOMB_RADIUS * (1 + DANGER_IDENTIFICATION_MAX_RADIUS_BONUS * skillFraction);
+  const bomb = nearestThreateningBomb(character, detectionRadius);
   if (!bomb) return false;
 
-  const skillFraction = Math.min(10, Math.max(0, dangerAvoidanceSkillFor(character))) / 10;
   if (now - bomb.plantedAt < DANGER_REACTION_MAX_DELAY_MS * (1 - skillFraction)) return false;
 
   // Déjà en train de fuir CETTE bombe : laisse ce déplacement se terminer plutôt que d'en relancer
