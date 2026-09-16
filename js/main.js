@@ -1452,6 +1452,45 @@ function drawProjectiles(now) {
   }
 }
 
+// ------------------------------------------------------------------
+// Animation de coup au corps à corps (demande utilisateur explicite, remplace l'ancien anneau de
+// dégâts générique -- voir sa suppression dans dealDamage) : un simple arc de cercle blanc, à un
+// angle aléatoire, qui flashe puis s'estompe sur la cible touchée. Accroché directement à
+// dealDamage comme le projectile ci-dessus : couvre donc l'attaque de base ET les sorts de mêlée
+// sans instrumenter chacun individuellement. Réservé aux attaquants au corps à corps
+// (combatProfile.melee) -- le pendant du projectile, réservé lui aux attaquants à distance.
+// ------------------------------------------------------------------
+const meleeSlashes = [];
+const MELEE_SLASH_DURATION_MS = 250;
+const MELEE_SLASH_ARC_RAD = Math.PI / 3; // 60° de chaque côté, donc 120° au total
+
+function spawnMeleeSlash(x, y, size) {
+  meleeSlashes.push({ x, y, size, angle: Math.random() * Math.PI * 2, createdAt: performance.now() });
+}
+
+function updateMeleeSlashes(now) {
+  for (let i = meleeSlashes.length - 1; i >= 0; i--) {
+    if (now - meleeSlashes[i].createdAt > MELEE_SLASH_DURATION_MS) meleeSlashes.splice(i, 1);
+  }
+}
+
+function drawMeleeSlashes(now) {
+  for (const slash of meleeSlashes) {
+    const t = (now - slash.createdAt) / MELEE_SLASH_DURATION_MS;
+    const alpha = Math.max(0, 1 - t);
+    const radius = slash.size / 2 + 4;
+    ctx.save();
+    ctx.translate(slash.x, slash.y);
+    ctx.rotate(slash.angle);
+    ctx.strokeStyle = `rgba(255, 255, 255, ${alpha.toFixed(2)})`;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(0, 0, radius, -MELEE_SLASH_ARC_RAD, MELEE_SLASH_ARC_RAD);
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
 // ------------------------------------------------------------
 // Compétences (voir bandeau de sélection, deux premières cases) : deux sorts par classe pour
 // l'instant, un clic sur la case lance le sort (pas de visée séparée -- une seule cible possible
@@ -1567,11 +1606,17 @@ function dealDamage(target, amount, rgb, source, isCrit, skillLabel) {
     target.x + (Math.random() - 0.5) * 24, target.y - target.size / 2 - 34,
     `-${afterReduction}${isCrit ? '!' : ''}`, isCrit ? '255, 213, 79' : rgb
   );
-  spawnSkillEffect(target.x, target.y, target.size, isCrit ? '255, 213, 79' : rgb);
+  // Plus d'anneau générique sur les dégâts (demande utilisateur explicite, "je n'ai plus besoin
+  // des cercles indiquant les dégâts") -- remplacé par un projectile à distance ou un arc de coup
+  // au corps à corps ci-dessous, selon le profil de l'attaquant. Le nombre flottant ci-dessus
+  // reste le seul retour visuel générique commun aux deux (et aux sources sans "source", ex.
+  // dégâts environnementaux).
   // Pas pour les bombes (Gobelin/Archer gobelin/Artificier) : une explosion n'a pas de "tireur"
   // à représenter par une trajectoire, même quand elle est attribuée à un ennemi à distance.
   if (source && !combatProfile(source).melee && skillLabel !== 'Bombe' && skillLabel !== 'Bombe volante') {
     spawnProjectile(source.x, source.y, target.x, target.y, source.color);
+  } else if (source && combatProfile(source).melee) {
+    spawnMeleeSlash(target.x, target.y, target.size);
   }
   // Sert à l'IA pour savoir si elle vient de se faire attaquer (voir AUTO_DEFENSIVE_SKILLS).
   if (target.playerControlled) target.lastDamageTakenAt = now;
@@ -5351,6 +5396,7 @@ function draw() {
 
     drawSkillEffects(performance.now());
     drawProjectiles(performance.now());
+    drawMeleeSlashes(performance.now());
     drawFloatingTexts(performance.now());
 
     if (combatPhase === 'victory' || combatPhase === 'defeat') {
@@ -5430,6 +5476,7 @@ function loop(now) {
   updateFloatingTexts(now);
   updateSkillEffects(now);
   updateProjectiles(now);
+  updateMeleeSlashes(now);
   checkCombatOutcome();
   draw();
   requestAnimationFrame(loop);
