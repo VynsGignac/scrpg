@@ -4650,19 +4650,35 @@ function drawSceneScrollbar(scene, viewTop) {
 }
 
 // ------------------------------------------------------------
-// Scène "Monde" : une carte de progression -- un chemin reliant des ronds, chacun un combat
-// différent (voir ENCOUNTERS), le dernier étant le boss final. Cliquer un rond débloqué (déjà
-// atteint ou le prochain) reconfigure l'unique emplacement d'ennemi du jeu avec les stats de ce
-// combat (voir resetCombatEncounter) et bascule sur la scène Combat ; le rond suivant se débloque
-// quand l'ennemi actuel tombe à 0 PV (déjà visible via sa croix de mort, voir drawCharacter).
+// Scène "Monde" : d'abord une liste de donjons (demande utilisateur explicite), puis, une fois un
+// donjon choisi, la carte de progression de ce donjon-là. Seul "Mine des gobelins" a du contenu
+// pour l'instant (voir ENCOUNTERS/WORLD_LEVELS ci-dessous, qui restent celles de ce donjon) -- les
+// 4 autres sont des emplacements réservés, verrouillés ("Bientôt disponible") en attendant leur
+// contenu (dans un second temps).
 // ------------------------------------------------------------
+const DUNGEONS = [
+  { name: 'Tutoriel', available: false },
+  { name: 'Camp des bandits', available: false },
+  { name: 'Mine des gobelins', available: true },
+  { name: 'Antre des araignées', available: false },
+  { name: 'Fosse démoniaque', available: false },
+];
+let selectedDungeon = null; // index dans DUNGEONS ; null = liste des donjons affichée
+
+// Une carte de progression -- un chemin reliant des ronds, chacun un combat différent (voir
+// ENCOUNTERS), le dernier étant le boss final. Cliquer un rond débloqué (déjà atteint ou le
+// prochain) reconfigure l'unique emplacement d'ennemi du jeu avec les stats de ce combat (voir
+// resetCombatEncounter) et bascule sur la scène Combat ; le rond suivant se débloque quand
+// l'ennemi actuel tombe à 0 PV (déjà visible via sa croix de mort, voir drawCharacter).
 const WORLD_LEVELS = ENCOUNTERS.map((encounter) => ({ label: encounter.label, isBoss: !!encounter.isBoss }));
 let worldProgress = 0; // index du prochain rond à vaincre ; les index < ça sont déjà complétés
 let currentWorldLevel = 0; // rond correspondant au combat affiché dans la scène Combat
 let combatOutcomeHandled = false; // évite de débloquer le rond suivant en boucle une fois le boss tombé
 
+const DUNGEON_HEADER_HEIGHT = 50; // bandeau "< Donjons" + nom du donjon (voir drawDungeonHeader)
+
 function worldLevelPositions() {
-  const top = TOP_BANNER_HEIGHT + 50;
+  const top = TOP_BANNER_HEIGHT + DUNGEON_HEADER_HEIGHT + 50;
   const bottom = canvas.height - 40;
   const count = WORLD_LEVELS.length;
   const usableHeight = Math.max(bottom - top, 1);
@@ -5291,7 +5307,71 @@ function drawGuildeScene() {
   }
 }
 
+// Liste des donjons (voir DUNGEONS) : une carte par donjon, cliquable seulement pour ceux qui ont
+// du contenu (available: true) -- les autres affichent "Bientôt disponible" et restent verrouillés.
+function drawDungeonListScene() {
+  const cardX = LIST_PADDING_X;
+  const cardWidth = canvas.width - LIST_PADDING_X * 2;
+  const rowHeight = 64;
+  const gap = 10;
+  let y = TOP_BANNER_HEIGHT + 20;
+
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  for (const dungeon of DUNGEONS) {
+    ctx.fillStyle = dungeon.available ? '#ffffff14' : '#ffffff0a';
+    ctx.fillRect(cardX, y, cardWidth, rowHeight);
+    ctx.strokeStyle = dungeon.available ? '#ffd54f88' : '#ffffff22';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(cardX + 0.5, y + 0.5, cardWidth - 1, rowHeight - 1);
+
+    ctx.font = 'bold 17px sans-serif';
+    ctx.fillStyle = dungeon.available ? '#ffffff' : '#ffffff55';
+    ctx.fillText(dungeon.name, cardX + 18, y + rowHeight / 2 - (dungeon.available ? 0 : 9));
+
+    if (!dungeon.available) {
+      ctx.font = '12px sans-serif';
+      ctx.fillStyle = '#ffffff55';
+      ctx.fillText('Bientôt disponible', cardX + 18, y + rowHeight / 2 + 13);
+    } else {
+      ctx.textAlign = 'right';
+      ctx.font = 'bold 20px sans-serif';
+      ctx.fillStyle = '#ffd54f';
+      ctx.fillText('›', cardX + cardWidth - 18, y + rowHeight / 2 + 1);
+      ctx.textAlign = 'left';
+    }
+
+    if (dungeon.available) {
+      const index = DUNGEONS.indexOf(dungeon);
+      registerHitRect(cardX, y, cardWidth, rowHeight, () => { selectedDungeon = index; });
+    }
+
+    y += rowHeight + gap;
+  }
+}
+
+// Bandeau au-dessus de la carte de progression d'un donjon (demande utilisateur explicite : la
+// liste des donjons ouvre "une carte équivalente à celle que l'on a actuellement dans monde") :
+// bouton retour vers la liste des donjons + nom du donjon en cours.
+function drawDungeonHeader() {
+  const y = TOP_BANNER_HEIGHT;
+  const backWidth = 90;
+  ctx.fillStyle = '#ffffff14';
+  ctx.fillRect(LIST_PADDING_X, y + 8, backWidth, DUNGEON_HEADER_HEIGHT - 16);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = 'bold 13px sans-serif';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText('‹ Donjons', LIST_PADDING_X + backWidth / 2, y + DUNGEON_HEADER_HEIGHT / 2 + 1);
+  registerHitRect(LIST_PADDING_X, y + 8, backWidth, DUNGEON_HEADER_HEIGHT - 16, () => { selectedDungeon = null; });
+
+  ctx.font = 'bold 17px sans-serif';
+  ctx.fillStyle = '#ffd54f';
+  ctx.fillText(DUNGEONS[selectedDungeon].name, canvas.width / 2, y + DUNGEON_HEADER_HEIGHT / 2 + 1);
+}
+
 function drawWorldScene() {
+  drawDungeonHeader();
   const positions = worldLevelPositions();
 
   ctx.strokeStyle = '#ffffff33';
@@ -5442,7 +5522,8 @@ function draw() {
     drawCharacterScene();
     if (hoveredSkillsCharacter) drawSkillsTooltip(hoveredSkillsCharacter);
   } else if (currentScene === 'monde') {
-    drawWorldScene();
+    if (selectedDungeon === null) drawDungeonListScene();
+    else drawWorldScene();
   } else if (currentScene === 'guilde') {
     drawGuildeScene();
   } else {
