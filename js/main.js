@@ -1257,9 +1257,14 @@ function updateAutoPlay(character) {
   }
 }
 
-// Inflige des dégâts périodiques à la cible tant que le personnage est arrivé à portée (melee :
-// juste à côté, distance : dans RANGED_ATTACK_RANGE) -- "arrivé" = plus en train de se déplacer,
-// pas besoin de revérifier la distance puisque orderAttack a déjà choisi une destination valide.
+// Inflige des dégâts périodiques à la cible tant que le personnage est à portée (melee : juste à
+// côté, distance : dans sa portée, voir isInRangeOf) -- revérifiée à chaque tentative (voir plus
+// bas) plutôt que supposée acquise une fois arrivé : la cible (l'ennemi) peut très bien s'être
+// éloignée entre-temps (ex. le Gobelin qui s'écarte pour poser une bombe ailleurs, voir
+// dashAndPlantBomb), sans quoi une attaque de corps à corps pouvait continuer à porter à distance,
+// ou un personnage sélectionné (donc pas suivi par updateAutoPlay) rester planté sans jamais se
+// replacer (demande utilisateur explicite : "le personnage qui a l'aggro reste immobile même si sa
+// cible se déplace").
 function updateCombat(character, now) {
   if (character.hp <= 0) return; // mort : ne peut plus attaquer
 
@@ -1281,8 +1286,19 @@ function updateCombat(character, now) {
     character.attackTarget = null;
     return;
   }
+
+  // La cible a pu s'éloigner depuis le dernier ordre d'attaque -- se replace automatiquement
+  // plutôt que de rester planté à distance sans rien faire. S'applique à TOUT personnage du
+  // joueur, sélectionné ou non : avant, seul l'auto-play (updateAutoPlay) le faisait, un
+  // personnage sélectionné n'était lui jamais reconduit vers une cible qui avait bougé.
+  if (character.playerControlled && !character.isMoving && !isInRangeOf(character, target)) {
+    approachForCombat(character, target);
+  }
+
   if (character.isMoving) return;
   if ((character.stunnedUntil || 0) > now) return; // étourdi (Gel) : ne peut pas non plus attaquer
+  if (!isInRangeOf(character, target)) return; // toujours hors de portée malgré la ré-approche ci-dessus (rare)
+
   // Cadence d'attaque ralentie (Éclat de givre) et accélérée par la Hâte (voir
   // attackSpeedMultiplier) -- les deux se combinent (un ralentissement n'annule pas le bonus de
   // Hâte déjà acquis, et inversement).
