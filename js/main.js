@@ -635,17 +635,47 @@ function drawStrategyOverlay() {
     }
   }
 
+  const roster = characters.filter((c) => c.playerControlled);
+  const barHeight = 76;
   const barY = TOP_BANNER_HEIGHT;
   ctx.fillStyle = 'rgba(16, 21, 26, 0.92)';
-  ctx.fillRect(0, barY, canvas.width, 40);
+  ctx.fillRect(0, barY, canvas.width, barHeight);
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.font = 'bold 13px sans-serif';
   ctx.fillStyle = '#ffd54f';
   ctx.fillText(
-    selected ? `Dessinez la zone de ${selected.className}` : 'Stratégie : choisissez un personnage',
-    canvas.width / 2, barY + 20
+    selected ? `Dessinez la zone de ${selected.className}` : 'Stratégie : choisissez un personnage ci-dessous',
+    canvas.width / 2, barY + 16
   );
+
+  // Rangée de sélection, une case par personnage actif (demande utilisateur explicite : chaque
+  // personnage doit avoir sa PROPRE zone, clairement sélectionnable) -- vient en plus du tap
+  // direct sur le carré du personnage sur le terrain (toujours possible), mais bien plus sûr/
+  // visible que de viser un petit carré au milieu du champ de bataille.
+  const chipGap = 10;
+  const chipSize = Math.min(48, (canvas.width - LIST_PADDING_X * 2 - chipGap * Math.max(0, roster.length - 1)) / Math.max(1, roster.length));
+  const chipsWidth = chipSize * roster.length + chipGap * Math.max(0, roster.length - 1);
+  let chipX = (canvas.width - chipsWidth) / 2;
+  const chipY = barY + 32;
+
+  for (const character of roster) {
+    const isSelected = character === selected;
+    ctx.fillStyle = character.color;
+    ctx.fillRect(chipX, chipY, chipSize, chipSize);
+    ctx.lineWidth = isSelected ? 3 : 1;
+    ctx.strokeStyle = isSelected ? '#ffd54f' : '#00000055';
+    const inset = isSelected ? 1.5 : 0.5;
+    ctx.strokeRect(chipX + inset, chipY + inset, chipSize - inset * 2, chipSize - inset * 2);
+    ctx.font = `bold ${Math.round(chipSize * 0.5)}px sans-serif`;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(character.label, chipX + chipSize / 2, chipY + chipSize / 2 + 1);
+    registerHitRect(chipX, chipY, chipSize, chipSize, () => {
+      deselectAll();
+      character.selected = true;
+    });
+    chipX += chipSize + chipGap;
+  }
 
   const gap = 12;
   const buttonWidth = Math.min(140, (canvas.width - LIST_PADDING_X * 2 - gap) / 2);
