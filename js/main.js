@@ -1174,8 +1174,10 @@ function updateDangerAvoidance(character, now) {
 // distance de la cible (clampPointDistance) : jamais de sortie de portée, même si la zone dessinée
 // déborde largement au-delà.
 // ------------------------------------------------------------
-const WANDER_INTERVAL_MS = 10000; // 10s (demande utilisateur explicite, réduit depuis 3s)
-const WANDER_INTERVAL_JITTER_MS = 2000; // 10 à 12s au total
+// 7 à 13s, tiré indépendamment pour chaque personnage à chaque cycle (demande utilisateur
+// explicite : désynchronisés, pas tous au même rythme).
+const WANDER_INTERVAL_MS = 7000;
+const WANDER_INTERVAL_JITTER_MS = 6000;
 const WANDER_MAX_STEP = 60; // distance max parcourue par déplacement (demande utilisateur explicite, réduite)
 
 function respectStrategySkillFor(character) {
