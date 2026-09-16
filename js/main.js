@@ -919,42 +919,50 @@ const AUTO_ABILITY_INTERVAL_MS = 1000; // délai mini entre deux compétences la
 // lui-même des bombes au sol encore actives (voir activeBombs) -- pas de la bombe volante (explose
 // sur toute la map, aucune position ne protège) ni de la zone de proximité de l'Artificier (ne
 // blesse pas, juste un délai). Réglable par joueur (0 à 10, player.skills.eviteDangers, onglet
-// Joueur, même échelle que SKILL_MAX) sur 4 axes :
-// - Identification de situation dangereuse : distance à laquelle une bombe est même repérée comme
-//   un danger à fuir -- à 0, seulement une fois DÉJÀ dans sa zone (DANGER_RADIUS pile) ; à 10,
-//   repérée bien avant d'y entrer (DANGER_RADIUS * (1 + DANGER_IDENTIFICATION_MAX_RADIUS_BONUS)),
-//   le temps de s'écarter avant même d'y avoir mis les pieds.
-// - Vitesse de réaction : délai après la pose d'une bombe avant de commencer à fuir (jusqu'à
-//   DANGER_REACTION_MAX_DELAY_MS à 0, quasi instantané à 10) -- mesuré depuis la pose de la bombe,
-//   pas depuis que le personnage est concerné, donc même un score de 0 finit par réagir avant que
-//   la mèche (BOMB_FUSE_MS) touche à sa fin.
+// Joueur, même échelle que SKILL_MAX) sur 3 axes (demande utilisateur explicite -- la marge de
+// sécurité envisagée un temps a été retirée, pas un bon paramètre) :
+// - Identification de situation dangereuse : PROBABILITÉ de reconnaître une bombe dont la zone le
+//   couvre comme un danger à fuir -- 0% à un score de 0 (n'identifie jamais rien), 100% à 10
+//   (identifie toujours). Tirée une seule fois par bombe et mémorisée (voir
+//   character.bombIdentification) : pas de nouveau tirage à chaque image, sinon le personnage
+//   "flickerait" entre identifier et ne pas identifier la même bombe.
+// - Vitesse de réaction : délai après la pose d'une bombe avant de commencer à fuir -- de
+//   DANGER_REACTION_MAX_DELAY_MS (2500 ms) à un score de 0, jusqu'à 0 ms (réaction instantanée) à
+//   un score de 10. Mesuré depuis la pose de la bombe, pas depuis que le personnage est concerné,
+//   donc même un score de 0 finit par réagir avant que la mèche (BOMB_FUSE_MS) touche à sa fin.
 // - Précision de la fuite : l'angle de fuite s'écarte de la direction idéale (droit loin du
 //   centre) d'un bruit aléatoire d'autant plus grand que le score est bas (jusqu'à
 //   DANGER_DIRECTION_MAX_NOISE_RAD à 0, nul à 10).
-// - Marge de sécurité : distance gardée au-delà du rayon de la bombe (DANGER_MIN_MARGIN à 0,
-//   DANGER_MAX_MARGIN à 10) -- un score élevé s'écarte largement, pas juste pile à la limite.
 // ------------------------------------------------------------
-const DANGER_IDENTIFICATION_MAX_RADIUS_BONUS = 0.6; // détecté jusqu'à 60% plus loin que la zone réelle, à 10
 const DANGER_REACTION_MAX_DELAY_MS = 2500;
 const DANGER_DIRECTION_MAX_NOISE_RAD = Math.PI / 2; // jusqu'à 90° d'écart à score 0
-const DANGER_MIN_MARGIN = 10;
-const DANGER_MAX_MARGIN = 60;
+const DANGER_FLEE_MARGIN = 15; // marge fixe (pas liée au score, demande utilisateur explicite), juste pour sortir franchement de la zone plutôt que de s'arrêter pile sur son bord
 
 function dangerAvoidanceSkillFor(character) {
   const player = players.find((p) => p.index === character.index);
   return player ? player.skills.eviteDangers || 0 : 0;
 }
 
-// Bombe au sol active la plus proche dont la zone de DÉTECTION (voir
-// DANGER_IDENTIFICATION_MAX_RADIUS_BONUS -- pas forcément sa zone de dégâts réelle) couvre
-// "character" -- rien s'il n'en a identifié aucune comme dangereuse.
-function nearestThreateningBomb(character, detectionRadius) {
+// Résultat mémorisé (voir en-tête ci-dessus) de l'identification d'UNE bombe précise par UN
+// personnage précis -- tiré une seule fois, jamais recalculé tant que cette bombe existe.
+function identifiesBomb(character, bomb, skillFraction) {
+  if (!character.bombIdentification) character.bombIdentification = {};
+  if (!(bomb.id in character.bombIdentification)) {
+    character.bombIdentification[bomb.id] = Math.random() < skillFraction;
+  }
+  return character.bombIdentification[bomb.id];
+}
+
+// Bombe au sol active la plus proche dont la zone couvre "character" ET qu'il a identifiée comme
+// dangereuse (voir identifiesBomb) -- rien s'il n'y en a aucune qui remplit les deux conditions.
+function nearestThreateningBomb(character, skillFraction) {
   let nearest = null;
   let nearestDist = Infinity;
   for (const bomb of activeBombs) {
     if (bomb.exploded) continue;
     const dist = Math.hypot(character.x - bomb.x, character.y - bomb.y);
-    if (dist > detectionRadius || dist >= nearestDist) continue;
+    if (dist > BOMB_RADIUS || dist >= nearestDist) continue;
+    if (!identifiesBomb(character, bomb, skillFraction)) continue;
     nearestDist = dist;
     nearest = bomb;
   }
@@ -966,8 +974,7 @@ function nearestThreateningBomb(character, detectionRadius) {
 // déplacement par-dessus, ex. approcher un ennemi).
 function updateDangerAvoidance(character, now) {
   const skillFraction = Math.min(10, Math.max(0, dangerAvoidanceSkillFor(character))) / 10;
-  const detectionRadius = BOMB_RADIUS * (1 + DANGER_IDENTIFICATION_MAX_RADIUS_BONUS * skillFraction);
-  const bomb = nearestThreateningBomb(character, detectionRadius);
+  const bomb = nearestThreateningBomb(character, skillFraction);
   if (!bomb) return false;
 
   if (now - bomb.plantedAt < DANGER_REACTION_MAX_DELAY_MS * (1 - skillFraction)) return false;
@@ -979,7 +986,7 @@ function updateDangerAvoidance(character, now) {
   const dx = character.x - bomb.x, dy = character.y - bomb.y;
   const idealAngle = Math.atan2(dy, dx); // déjà la direction "loin de la bombe"
   const angle = idealAngle + (Math.random() * 2 - 1) * DANGER_DIRECTION_MAX_NOISE_RAD * (1 - skillFraction);
-  const targetDist = BOMB_RADIUS + DANGER_MIN_MARGIN + (DANGER_MAX_MARGIN - DANGER_MIN_MARGIN) * skillFraction;
+  const targetDist = BOMB_RADIUS + DANGER_FLEE_MARGIN;
 
   startMove(character, bomb.x + Math.cos(angle) * targetDist, bomb.y + Math.sin(angle) * targetDist);
   character.fleeingBombId = bomb.id;
@@ -4276,6 +4283,7 @@ function resetTransientCombatState(entity) {
   entity.nextFlyingBombAt = 0;
   entity.flyingBombCounted = false;
   entity.fleeingBombId = null;
+  entity.bombIdentification = {};
 }
 
 // Remet les personnages sélectionnés en place au début d'un combat (PV/mana pleins, plus d'effets
