@@ -551,6 +551,15 @@ function prePullMinY() {
   return TOP_BANNER_HEIGHT + (canvas.height - TOP_BANNER_HEIGHT) / 3;
 }
 
+// Position verticale par défaut d'un ennemi au début d'un combat (demande utilisateur explicite,
+// avant trop proche du bouton PULL) : aux 3/4 du tiers réservé aux ennemis, donc confortablement
+// au-dessus de la ligne pointillée (prePullMinY) sans coller au bandeau du haut ni au bouton PULL.
+// Utilisée aussi bien pour un vrai combat (resetCombatEncounter) que pour le mannequin
+// d'entraînement (enterTrainingCombat), pour rester cohérent entre les deux.
+function defaultEnemySpawnY() {
+  return TOP_BANNER_HEIGHT + (prePullMinY() - TOP_BANNER_HEIGHT) * 0.75;
+}
+
 function startPullCountdown() {
   if (combatPhase !== 'prePull') return;
   combatPhase = 'countdown';
@@ -3941,7 +3950,10 @@ function fittingFontSize(labels, maxWidth, startSize, minSize) {
 }
 
 function drawTopBanner() {
-  ctx.fillStyle = 'rgba(16, 21, 26, 0.95)';
+  // Opaque (pas de transparence, demande utilisateur explicite) : sur la scène Combat, l'image de
+  // fond (voir drawCombatBackground, dessinée sur tout le canvas y compris sous ce bandeau)
+  // transparaissait légèrement à travers l'ancien fond semi-transparent.
+  ctx.fillStyle = '#10151a';
   ctx.fillRect(0, 0, canvas.width, TOP_BANNER_HEIGHT);
   ctx.strokeStyle = '#ffffff22';
   ctx.lineWidth = 1;
@@ -4626,7 +4638,7 @@ function resetCombatEncounter(levelIndex) {
     enemy.stationary = !!encounter.stationary;
     enemy.flyingBombAttack = !!encounter.flyingBombAttack;
     resetTransientCombatState(enemy);
-    const spawn = clampPointToField({ size: encounter.size }, cx, cy - 220);
+    const spawn = clampPointToField({ size: encounter.size }, cx, defaultEnemySpawnY());
     enemy.x = spawn.x;
     enemy.y = spawn.y;
   }
