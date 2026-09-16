@@ -1174,8 +1174,9 @@ function updateDangerAvoidance(character, now) {
 // distance de la cible (clampPointDistance) : jamais de sortie de portée, même si la zone dessinée
 // déborde largement au-delà.
 // ------------------------------------------------------------
-const WANDER_INTERVAL_MS = 3000;
-const WANDER_INTERVAL_JITTER_MS = 2000;
+const WANDER_INTERVAL_MS = 10000; // 10s (demande utilisateur explicite, réduit depuis 3s)
+const WANDER_INTERVAL_JITTER_MS = 2000; // 10 à 12s au total
+const WANDER_MAX_STEP = 60; // distance max parcourue par déplacement (demande utilisateur explicite, réduite)
 
 function respectStrategySkillFor(character) {
   const player = players.find((p) => p.index === character.index);
@@ -1221,6 +1222,17 @@ function updateWander(character, now) {
     const angle = Math.random() * Math.PI * 2;
     const dist = minDist + Math.random() * (maxDist - minDist);
     dest = { x: target.x + Math.cos(angle) * dist, y: target.y + Math.sin(angle) * dist };
+  }
+
+  // Distance parcourue limitée (demande utilisateur explicite) : jamais un grand bond même si la
+  // destination "idéale" (zone ou point aléatoire) est plus loin -- se rapproche par petits pas,
+  // quitte à mettre plusieurs cycles pour vraiment l'atteindre. Reclampée à la portée d'attaque
+  // ensuite, ce petit pas pouvant en sortir légèrement.
+  const stepDx = dest.x - character.x, stepDy = dest.y - character.y;
+  const stepDist = Math.hypot(stepDx, stepDy);
+  if (stepDist > WANDER_MAX_STEP) {
+    const scale = WANDER_MAX_STEP / stepDist;
+    dest = clampPointDistance({ x: character.x + stepDx * scale, y: character.y + stepDy * scale }, target, minDist, maxDist);
   }
 
   startMove(character, dest.x, dest.y);
