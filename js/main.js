@@ -726,7 +726,11 @@ function combatProfile(character) {
 // faire remonter dans le ciblage automatique/les sorts, qui supposent tous un seul ennemi réel).
 function hitTestEnemyAt(x, y) {
   return enemies.find((e) => e.hp > 0 && isInsideCharacter(e, x, y))
-    || flyingBombs.find((b) => b.hp > 0 && !b.explodedAt && !b.destroyedAt && isInsideCharacter(b, x, y))
+    // Rayon de tap élargi (voir FLYING_BOMB_TAP_RADIUS), pas isInsideCharacter/sa taille visuelle
+    // réelle -- sinon, petite et toujours en mouvement, elle échappe facilement au point de
+    // relâchement du glisser-déposer (demande utilisateur explicite : les ordres semblaient
+    // "ignorés" alors que c'était juste raté de peu).
+    || flyingBombs.find((b) => b.hp > 0 && !b.explodedAt && !b.destroyedAt && Math.hypot(x - b.x, y - b.y) <= FLYING_BOMB_TAP_RADIUS)
     || null;
 }
 
@@ -947,6 +951,10 @@ const FLYING_BOMB_DAMAGE = 50;
 const FLYING_BOMB_SIZE = 26;
 // Bleu (demande utilisateur explicite) -- distinct du noir des bombes au sol (BOMB_COLOR_RGB).
 const FLYING_BOMB_COLOR_RGB = '33, 150, 243';
+// Rayon de "tap" pour la cibler (voir hitTestEnemyAt), bien plus généreux que sa taille visuelle
+// (FLYING_BOMB_SIZE) -- demande utilisateur explicite : elle est petite ET en mouvement continu
+// pendant tout le geste de glisser-déposer, la viser pile dessus au relâchement est peu fiable.
+const FLYING_BOMB_TAP_RADIUS = 45;
 let flyingBombs = [];
 let nextFlyingBombId = 1;
 
