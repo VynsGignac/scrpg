@@ -428,6 +428,33 @@ const ENCOUNTERS = [
   { name: 'Seigneur des ombres', label: 'B', color: '#c62828', size: 57, hpMax: 5000, statValue: 30, combat: { melee: true, stat: 'force' }, isBoss: true },
 ];
 
+// Les 3 premiers combats du donjon Tutoriel (demande utilisateur explicite, voir DUNGEONS) :
+// - Rond 1 : un seul personnage (Guerrier, imposé via forcedClasses -- voir applyEncounterParty)
+//   contre un ennemi à peu de PV qui ne riposte jamais ni ne se déplace (trainingDummy, même
+//   comportement d'IA que le mannequin d'entraînement de la Guilde -- voir updateEnemyAI). Juste
+//   pour apprendre à sélectionner/attaquer.
+// - Rond 2 : le même Guerrier seul contre un adversaire qui riposte fort -- ses PV et ses dégâts
+//   sont volontairement réglés pour qu'une attaque de base seule perde le combat (le Guerrier meurt
+//   avant d'avoir fait assez de dégâts), pour forcer l'usage de ses compétences (Posture défensive
+//   pour encaisser, Frappe rageuse/Cri de rage pour finir plus vite).
+// - Rond 3 : Gardien (tank, menace x2 -- voir TANK_THREAT_CLASSES) + Voleur (dps) contre un seul
+//   ennemi, pour enseigner la gestion de l'aggro : si le Voleur tape sans que le Gardien tape aussi,
+//   l'ennemi change de cible vers le Voleur (plus fragile).
+const TUTORIAL_ENCOUNTERS = [
+  {
+    name: "Mannequin d'entraînement", label: 'C', color: '#6d4c41', size: 42, hpMax: 60, statValue: 0,
+    combat: { melee: true, stat: 'force' }, trainingDummy: true, forcedClasses: ['Guerrier'],
+  },
+  {
+    name: 'Duelliste vétéran', label: 'D', color: '#c62828', size: 40, hpMax: 200, statValue: 26,
+    combat: { melee: true, stat: 'force' }, forcedClasses: ['Guerrier'],
+  },
+  {
+    name: 'Brute des faubourgs', label: 'B', color: '#5d4037', size: 46, hpMax: 350, statValue: 20,
+    combat: { melee: true, stat: 'force' }, forcedClasses: ['Gardien', 'Voleur'],
+  },
+];
+
 // Boss : plus gros, pas contrôlable par le joueur, a une barre de vie (voir drawEnemyHealthBar).
 // Choisit un personnage au hasard à sa première action et le poursuit/attaque pendant tout le
 // combat (voir updateEnemyAI) -- ne change jamais de cible. Ses stats de départ viennent du
@@ -4183,7 +4210,9 @@ let godMode = false;
 const GOD_MODE_BOX_SIZE = 26;
 
 function applyGodMode() {
-  worldProgress = WORLD_LEVELS.length;
+  for (const dungeon of DUNGEONS) {
+    if (dungeon.encounters) dungeon.progress = dungeon.encounters.length;
+  }
   for (const player of players) {
     for (const key of Object.keys(player.skills)) player.skills[key] = SKILL_MAX;
   }
@@ -4651,27 +4680,48 @@ function drawSceneScrollbar(scene, viewTop) {
 
 // ------------------------------------------------------------
 // Scène "Monde" : d'abord une liste de donjons (demande utilisateur explicite), puis, une fois un
-// donjon choisi, la carte de progression de ce donjon-là. Seul "Mine des gobelins" a du contenu
-// pour l'instant (voir ENCOUNTERS/WORLD_LEVELS ci-dessous, qui restent celles de ce donjon) -- les
-// 4 autres sont des emplacements réservés, verrouillés ("Bientôt disponible") en attendant leur
-// contenu (dans un second temps).
+// donjon choisi, la carte de progression de ce donjon-là (voir currentDungeonLevels/drawWorldScene,
+// génériques -- chaque donjon a ses propres ENCOUNTERS et sa propre progression, "encounters: null"
+// pour ceux qui n'ont pas encore de contenu). "Camp des bandits"/"Antre des araignées"/"Fosse
+// démoniaque" restent verrouillés ("Bientôt disponible") en attendant leur contenu (dans un second
+// temps).
 // ------------------------------------------------------------
 const DUNGEONS = [
-  { name: 'Tutoriel', available: false },
-  { name: 'Camp des bandits', available: false },
-  { name: 'Mine des gobelins', available: true },
-  { name: 'Antre des araignées', available: false },
-  { name: 'Fosse démoniaque', available: false },
+  { name: 'Tutoriel', encounters: TUTORIAL_ENCOUNTERS, progress: 0 },
+  { name: 'Camp des bandits', encounters: null, progress: 0 },
+  { name: 'Mine des gobelins', encounters: ENCOUNTERS, progress: 0 },
+  { name: 'Antre des araignées', encounters: null, progress: 0 },
+  { name: 'Fosse démoniaque', encounters: null, progress: 0 },
 ];
 let selectedDungeon = null; // index dans DUNGEONS ; null = liste des donjons affichée
+
+// Composition forcée (demande utilisateur explicite, voir TUTORIAL_ENCOUNTERS.forcedClasses) : le
+// groupe actif normal (voir activePartyIndices/scène Guilde) est mis de côté le temps d'un combat
+// du Tutoriel, puis restauré automatiquement dès qu'un combat SANS forcedClasses est relancé
+// (donjon normal ou entraînement) -- jamais écrasé une 2e fois tant qu'il n'a pas été restauré,
+// pour ne pas perdre la vraie composition si plusieurs rondes forcées s'enchaînent.
+let savedActivePartyIndices = null;
+
+function applyEncounterParty(encounter) {
+  if (encounter.forcedClasses) {
+    if (savedActivePartyIndices === null) savedActivePartyIndices = activePartyIndices.slice();
+    activePartyIndices = encounter.forcedClasses.map((name) => roster.find((c) => c.className === name).rosterId);
+  } else if (savedActivePartyIndices !== null) {
+    activePartyIndices = savedActivePartyIndices;
+    savedActivePartyIndices = null;
+  }
+}
 
 // Une carte de progression -- un chemin reliant des ronds, chacun un combat différent (voir
 // ENCOUNTERS), le dernier étant le boss final. Cliquer un rond débloqué (déjà atteint ou le
 // prochain) reconfigure l'unique emplacement d'ennemi du jeu avec les stats de ce combat (voir
 // resetCombatEncounter) et bascule sur la scène Combat ; le rond suivant se débloque quand
 // l'ennemi actuel tombe à 0 PV (déjà visible via sa croix de mort, voir drawCharacter).
-const WORLD_LEVELS = ENCOUNTERS.map((encounter) => ({ label: encounter.label, isBoss: !!encounter.isBoss }));
-let worldProgress = 0; // index du prochain rond à vaincre ; les index < ça sont déjà complétés
+// Ronds du donjon actuellement sélectionné (voir selectedDungeon/DUNGEONS) -- recalculé à chaque
+// affichage plutôt que mis en cache une fois pour toutes, puisque le donjon affiché change.
+function currentDungeonLevels() {
+  return DUNGEONS[selectedDungeon].encounters.map((encounter) => ({ label: encounter.label, isBoss: !!encounter.isBoss }));
+}
 let currentWorldLevel = 0; // rond correspondant au combat affiché dans la scène Combat
 let combatOutcomeHandled = false; // évite de débloquer le rond suivant en boucle une fois le boss tombé
 
@@ -4680,9 +4730,10 @@ const DUNGEON_HEADER_HEIGHT = 50; // bandeau "< Donjons" + nom du donjon (voir d
 function worldLevelPositions() {
   const top = TOP_BANNER_HEIGHT + DUNGEON_HEADER_HEIGHT + 50;
   const bottom = canvas.height - 40;
-  const count = WORLD_LEVELS.length;
+  const levels = currentDungeonLevels();
+  const count = levels.length;
   const usableHeight = Math.max(bottom - top, 1);
-  return WORLD_LEVELS.map((level, index) => {
+  return levels.map((level, index) => {
     const t = count === 1 ? 0 : index / (count - 1);
     return {
       x: canvas.width * (index % 2 === 0 ? 0.32 : 0.68),
@@ -4782,7 +4833,7 @@ function resetPlayerCombatState() {
 }
 
 function resetCombatEncounter(levelIndex) {
-  const encounter = ENCOUNTERS[levelIndex];
+  const encounter = DUNGEONS[selectedDungeon].encounters[levelIndex];
   const enemy = enemies[0];
   if (enemy && encounter) {
     enemy.name = encounter.name;
@@ -4793,7 +4844,7 @@ function resetCombatEncounter(levelIndex) {
     enemy.hp = encounter.hpMax;
     enemy.combatOverride = encounter.combat;
     enemy.stats = { force: encounter.statValue };
-    enemy.trainingDummy = false;
+    enemy.trainingDummy = !!encounter.trainingDummy;
     enemy.bombAttack = encounter.bombAttack || null;
     enemy.stationary = !!encounter.stationary;
     enemy.flyingBombAttack = !!encounter.flyingBombAttack;
@@ -4817,6 +4868,7 @@ function enterCombatLevel(index) {
   threatPanelEnemy = null;
   expandedStatsCharacter = null;
   strategyMode = false;
+  applyEncounterParty(DUNGEONS[selectedDungeon].encounters[index]);
   resetCombatEncounter(index);
   combatStats = createCombatStats(); // après resetCombatEncounter : a besoin des personnages déjà en place
   currentScene = 'combat';
@@ -4836,6 +4888,12 @@ function enterTrainingCombat() {
   threatPanelEnemy = null;
   expandedStatsCharacter = null;
   strategyMode = false;
+  // Restaure la vraie composition si une ronde du Tutoriel l'avait mise de côté (voir
+  // applyEncounterParty) : l'entraînement doit toujours porter sur le groupe réellement choisi.
+  if (savedActivePartyIndices !== null) {
+    activePartyIndices = savedActivePartyIndices;
+    savedActivePartyIndices = null;
+  }
 
   const enemy = enemies[0];
   if (enemy) {
@@ -4898,8 +4956,9 @@ function checkCombatOutcome() {
   if (boss.hp <= 0) {
     combatOutcomeHandled = true;
     combatPhase = 'victory';
-    if (currentWorldLevel === worldProgress) {
-      worldProgress = Math.min(worldProgress + 1, WORLD_LEVELS.length);
+    const dungeon = DUNGEONS[selectedDungeon];
+    if (currentWorldLevel === dungeon.progress) {
+      dungeon.progress = Math.min(dungeon.progress + 1, dungeon.encounters.length);
     }
     for (const character of characters) {
       if (character.playerControlled) grantXp(character, VICTORY_XP);
@@ -5319,17 +5378,18 @@ function drawDungeonListScene() {
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
   for (const dungeon of DUNGEONS) {
-    ctx.fillStyle = dungeon.available ? '#ffffff14' : '#ffffff0a';
+    const available = !!dungeon.encounters;
+    ctx.fillStyle = available ? '#ffffff14' : '#ffffff0a';
     ctx.fillRect(cardX, y, cardWidth, rowHeight);
-    ctx.strokeStyle = dungeon.available ? '#ffd54f88' : '#ffffff22';
+    ctx.strokeStyle = available ? '#ffd54f88' : '#ffffff22';
     ctx.lineWidth = 1;
     ctx.strokeRect(cardX + 0.5, y + 0.5, cardWidth - 1, rowHeight - 1);
 
     ctx.font = 'bold 17px sans-serif';
-    ctx.fillStyle = dungeon.available ? '#ffffff' : '#ffffff55';
-    ctx.fillText(dungeon.name, cardX + 18, y + rowHeight / 2 - (dungeon.available ? 0 : 9));
+    ctx.fillStyle = available ? '#ffffff' : '#ffffff55';
+    ctx.fillText(dungeon.name, cardX + 18, y + rowHeight / 2 - (available ? 0 : 9));
 
-    if (!dungeon.available) {
+    if (!available) {
       ctx.font = '12px sans-serif';
       ctx.fillStyle = '#ffffff55';
       ctx.fillText('Bientôt disponible', cardX + 18, y + rowHeight / 2 + 13);
@@ -5341,7 +5401,7 @@ function drawDungeonListScene() {
       ctx.textAlign = 'left';
     }
 
-    if (dungeon.available) {
+    if (available) {
       const index = DUNGEONS.indexOf(dungeon);
       registerHitRect(cardX, y, cardWidth, rowHeight, () => { selectedDungeon = index; });
     }
@@ -5363,7 +5423,16 @@ function drawDungeonHeader() {
   ctx.font = 'bold 13px sans-serif';
   ctx.fillStyle = '#ffffff';
   ctx.fillText('‹ Donjons', LIST_PADDING_X + backWidth / 2, y + DUNGEON_HEADER_HEIGHT / 2 + 1);
-  registerHitRect(LIST_PADDING_X, y + 8, backWidth, DUNGEON_HEADER_HEIGHT - 16, () => { selectedDungeon = null; });
+  registerHitRect(LIST_PADDING_X, y + 8, backWidth, DUNGEON_HEADER_HEIGHT - 16, () => {
+    // Restaure la vraie composition tout de suite en quittant le donjon (voir applyEncounterParty)
+    // plutôt que d'attendre le prochain combat -- évite que la Guilde affiche encore le groupe
+    // forcé du Tutoriel entre-temps.
+    if (savedActivePartyIndices !== null) {
+      activePartyIndices = savedActivePartyIndices;
+      savedActivePartyIndices = null;
+    }
+    selectedDungeon = null;
+  });
 
   ctx.font = 'bold 17px sans-serif';
   ctx.fillStyle = '#ffd54f';
@@ -5373,6 +5442,7 @@ function drawDungeonHeader() {
 function drawWorldScene() {
   drawDungeonHeader();
   const positions = worldLevelPositions();
+  const progress = DUNGEONS[selectedDungeon].progress;
 
   ctx.strokeStyle = '#ffffff33';
   ctx.lineWidth = 4;
@@ -5384,9 +5454,9 @@ function drawWorldScene() {
   ctx.stroke();
 
   for (const p of positions) {
-    const completed = p.index < worldProgress;
-    const current = p.index === worldProgress;
-    const locked = p.index > worldProgress;
+    const completed = p.index < progress;
+    const current = p.index === progress;
+    const locked = p.index > progress;
     const radius = p.level.isBoss ? 34 : 26;
 
     ctx.beginPath();
