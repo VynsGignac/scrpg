@@ -4100,6 +4100,55 @@ function drawSkillRow(player, key, label, x, y, width) {
   return y + 16 + barHeight + 10;
 }
 
+// ------------------------------------------------------------
+// Mode Dieu (demande utilisateur explicite, outil de test) : une case à cocher qui, au moment où
+// elle passe cochée, débloque instantanément tous les niveaux du Monde et met les 5
+// caractéristiques + la Hâte de TOUT le roster (les 12 classes, pas seulement les 4 actuellement
+// en donjon) à leur maximum. Action ponctuelle déclenchée par la transition décochée -> cochée,
+// pas un état permanent réappliqué en boucle -- la décocher ensuite n'annule rien (pas d'"avant"
+// propre à restaurer, surtout une fois l'équipement aussi entré en jeu).
+// ------------------------------------------------------------
+let godMode = false;
+const GOD_MODE_BOX_SIZE = 26;
+
+function applyGodMode() {
+  worldProgress = WORLD_LEVELS.length;
+  for (const character of roster) {
+    character.baseStats.force = STAT_MAX;
+    character.baseStats.agilite = STAT_MAX;
+    character.baseStats.endurance = STAT_MAX;
+    character.baseStats.intelligence = STAT_MAX;
+    character.baseStats.savoir = STAT_MAX;
+    character.baseStats.hate = HASTE_CAP;
+    recomputeStats(character);
+    character.hp = character.hpMax;
+    character.mana = character.manaMax;
+  }
+}
+
+function drawGodModeToggle(x, y, width) {
+  ctx.fillStyle = godMode ? '#ffd54f' : '#ffffff14';
+  ctx.fillRect(x, y, GOD_MODE_BOX_SIZE, GOD_MODE_BOX_SIZE);
+  ctx.strokeStyle = '#ffd54f';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x + 0.5, y + 0.5, GOD_MODE_BOX_SIZE - 1, GOD_MODE_BOX_SIZE - 1);
+  if (godMode) drawCheckmark(x + GOD_MODE_BOX_SIZE / 2, y + GOD_MODE_BOX_SIZE / 2, GOD_MODE_BOX_SIZE * 0.7);
+
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.font = 'bold 13px sans-serif';
+  ctx.fillStyle = '#ffd54f';
+  ctx.fillText('Mode Dieu (test) : débloque tout, stats au max', x + GOD_MODE_BOX_SIZE + 10, y + GOD_MODE_BOX_SIZE / 2 + 1);
+
+  registerHitRect(x, y, width, GOD_MODE_BOX_SIZE, () => {
+    const turningOn = !godMode;
+    godMode = !godMode;
+    if (turningOn) applyGodMode();
+  });
+
+  return y + GOD_MODE_BOX_SIZE + 20;
+}
+
 // Scène "Joueur" : la liste des joueurs (humains simulés qui louent les personnages), avec leurs
 // deux compétences améliorables au clic (voir drawSkillRow).
 function drawPlayerScene() {
@@ -4116,6 +4165,8 @@ function drawPlayerScene() {
   ctx.beginPath();
   ctx.rect(0, viewTop, canvas.width, canvas.height - viewTop);
   ctx.clip();
+
+  y = drawGodModeToggle(cardX, y, cardWidth);
 
   for (const player of players) {
     const character = characters.find((c) => c.playerControlled && c.index === player.index);
