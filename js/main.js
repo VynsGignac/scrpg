@@ -1385,35 +1385,51 @@ function drawFloatingTexts(now) {
 }
 
 // ------------------------------------------------------------------
-// Effet visuel de sort (demande utilisateur explicite : "quelque chose de très simple, mais
-// pouvoir au moins voir quelque chose") -- un simple anneau qui grandit et s'estompe sur la
-// cible touchée, coloré avec le même rgb que le texte de dégâts/soin de ce sort-là (déjà propre à
-// chaque sort, voir dealDamage/healCharacter). Accroché directement à dealDamage/healCharacter :
-// couvre donc automatiquement l'attaque de base, les 48 sorts et les DOT/brûlures/ticks, sans
-// avoir à instrumenter chacun individuellement.
+// Effet visuel de soin (demande utilisateur explicite : un cylindre vert sur le personnage qui
+// reçoit le soin) -- un cylindre translucide qui enveloppe le personnage et s'élève avant de
+// s'estomper. Accroché directement à healCharacter : couvre donc le soin de base et les 48 sorts
+// de soin/DOT-inverse sans avoir à instrumenter chacun individuellement.
 // ------------------------------------------------------------------
-const skillEffects = [];
-const SKILL_EFFECT_DURATION_MS = 450;
+const healEffects = [];
+const HEAL_EFFECT_DURATION_MS = 600;
 
-function spawnSkillEffect(x, y, size, rgb) {
-  skillEffects.push({ x, y, size, rgb, createdAt: performance.now() });
+function spawnHealEffect(x, y, size) {
+  healEffects.push({ x, y, size, createdAt: performance.now() });
 }
 
-function updateSkillEffects(now) {
-  for (let i = skillEffects.length - 1; i >= 0; i--) {
-    if (now - skillEffects[i].createdAt > SKILL_EFFECT_DURATION_MS) skillEffects.splice(i, 1);
+function updateHealEffects(now) {
+  for (let i = healEffects.length - 1; i >= 0; i--) {
+    if (now - healEffects[i].createdAt > HEAL_EFFECT_DURATION_MS) healEffects.splice(i, 1);
   }
 }
 
-function drawSkillEffects(now) {
-  ctx.lineWidth = 3;
-  for (const effect of skillEffects) {
-    const t = (now - effect.createdAt) / SKILL_EFFECT_DURATION_MS;
-    const radius = effect.size / 2 + t * effect.size * 0.6;
+function drawHealEffects(now) {
+  for (const effect of healEffects) {
+    const t = (now - effect.createdAt) / HEAL_EFFECT_DURATION_MS;
+    const rise = Math.min(1, t / 0.4);
     const alpha = Math.max(0, 1 - t);
-    ctx.strokeStyle = `rgba(${effect.rgb}, ${alpha.toFixed(2)})`;
+    const bottomY = effect.y + effect.size / 2;
+    const height = effect.size * 1.3 * rise;
+    const topY = bottomY - height;
+    const rx = effect.size * 0.5;
+    const ry = rx * 0.35;
+
+    ctx.fillStyle = `rgba(129, 199, 132, ${(alpha * 0.35).toFixed(2)})`;
+    ctx.fillRect(effect.x - rx, topY, rx * 2, height);
+
+    ctx.strokeStyle = `rgba(200, 255, 200, ${(alpha * 0.9).toFixed(2)})`;
+    ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.arc(effect.x, effect.y, radius, 0, Math.PI * 2);
+    ctx.moveTo(effect.x - rx, topY);
+    ctx.lineTo(effect.x - rx, bottomY);
+    ctx.moveTo(effect.x + rx, topY);
+    ctx.lineTo(effect.x + rx, bottomY);
+    ctx.stroke();
+
+    ctx.fillStyle = `rgba(165, 214, 167, ${(alpha * 0.7).toFixed(2)})`;
+    ctx.beginPath();
+    ctx.ellipse(effect.x, topY, rx, ry, 0, 0, Math.PI * 2);
+    ctx.fill();
     ctx.stroke();
   }
 }
@@ -1421,8 +1437,8 @@ function drawSkillEffects(now) {
 // ------------------------------------------------------------------
 // Projectile visuel (demande utilisateur explicite) : une petite boule de la couleur du lanceur
 // (déjà définie par classe, voir CLASS_COLORS/character.color, ou celle de l'ennemi) qui file de
-// lui vers la cible -- accroché directement à dealDamage comme spawnSkillEffect ci-dessus, donc
-// couvre aussi bien l'attaque de base que les 48 sorts sans instrumenter chacun individuellement.
+// lui vers la cible -- accroché directement à dealDamage, donc couvre aussi bien l'attaque de
+// base que les 48 sorts sans instrumenter chacun individuellement.
 // Réservé aux attaquants à distance (combatProfile non melee) : un coup de corps à corps n'a pas
 // de trajectoire à montrer.
 // ------------------------------------------------------------------
@@ -1691,7 +1707,7 @@ function computeHybridStatDamage(character, primaryKey, primaryPercent, secondar
 function healCharacter(target, amount, source, skillLabel) {
   target.hp = Math.min(target.hpMax, target.hp + amount);
   spawnFloatingText(target.x + (Math.random() - 0.5) * 24, target.y - target.size / 2 - 34, `+${amount}`, '129, 199, 132');
-  spawnSkillEffect(target.x, target.y, target.size, '129, 199, 132');
+  spawnHealEffect(target.x, target.y, target.size);
   if (source && source.playerControlled) {
     addOwnActionThreat(source, amount, performance.now());
     recordHealStat(source.index, amount, skillLabel);
@@ -5395,7 +5411,7 @@ function draw() {
       ctx.stroke();
     }
 
-    drawSkillEffects(performance.now());
+    drawHealEffects(performance.now());
     drawProjectiles(performance.now());
     drawMeleeSlashes(performance.now());
     drawFloatingTexts(performance.now());
@@ -5475,7 +5491,7 @@ function loop(now) {
     updateFlyingBombs(dt, now);
   }
   updateFloatingTexts(now);
-  updateSkillEffects(now);
+  updateHealEffects(now);
   updateProjectiles(now);
   updateMeleeSlashes(now);
   checkCombatOutcome();
