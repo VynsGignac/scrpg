@@ -356,7 +356,11 @@ const players = chosenNames.map((name, i) => ({
   index: i + 1,
   name,
   level: 1, xp: 0,
-  skills: { apm: randomInt(0, 5), connaissanceJeu: randomInt(0, 5) },
+  // eviteDangers (0-10, demande utilisateur explicite) : efficacité de l'auto-play à s'écarter
+  // des bombes au sol quand personne ne pilote directement le personnage (voir
+  // updateDangerAvoidance) -- même échelle que SKILL_MAX (10), contrairement à apm/connaissanceJeu
+  // qui restent pour l'instant de simples emplacements sans effet réel.
+  skills: { apm: randomInt(0, 5), connaissanceJeu: randomInt(0, 5), eviteDangers: randomInt(0, 5) },
 }));
 
 // Les 4 premières classes tirées au hasard forment le groupe de départ.
@@ -909,6 +913,72 @@ const AUTO_DEFENSIVE_SKILLS = new Set([
 const AUTO_DEFENSIVE_WINDOW_MS = 4000;
 const AUTO_ABILITY_INTERVAL_MS = 1000; // délai mini entre deux compétences lancées par l'IA
 
+// ------------------------------------------------------------
+// Évitement automatique des dangers (demande utilisateur explicite) : un personnage NON
+// sélectionné (aucun ordre du joueur en cours, voir updateAutoPlay ci-dessous) s'écarte de
+// lui-même des bombes au sol encore actives (voir activeBombs) -- pas de la bombe volante (explose
+// sur toute la map, aucune position ne protège) ni de la zone de proximité de l'Artificier (ne
+// blesse pas, juste un délai). Réglable par joueur (0 à 10, player.skills.eviteDangers, onglet
+// Joueur, même échelle que SKILL_MAX) sur 3 axes :
+// - Vitesse de réaction : délai après la pose d'une bombe avant de commencer à fuir (jusqu'à
+//   DANGER_REACTION_MAX_DELAY_MS à 0, quasi instantané à 10) -- mesuré depuis la pose de la bombe,
+//   pas depuis que le personnage est concerné, donc même un score de 0 finit par réagir avant que
+//   la mèche (BOMB_FUSE_MS) touche à sa fin.
+// - Précision de la fuite : l'angle de fuite s'écarte de la direction idéale (droit loin du
+//   centre) d'un bruit aléatoire d'autant plus grand que le score est bas (jusqu'à
+//   DANGER_DIRECTION_MAX_NOISE_RAD à 0, nul à 10).
+// - Marge de sécurité : distance gardée au-delà du rayon de la bombe (DANGER_MIN_MARGIN à 0,
+//   DANGER_MAX_MARGIN à 10) -- un score élevé s'écarte largement, pas juste pile à la limite.
+// ------------------------------------------------------------
+const DANGER_REACTION_MAX_DELAY_MS = 2500;
+const DANGER_DIRECTION_MAX_NOISE_RAD = Math.PI / 2; // jusqu'à 90° d'écart à score 0
+const DANGER_MIN_MARGIN = 10;
+const DANGER_MAX_MARGIN = 60;
+
+function dangerAvoidanceSkillFor(character) {
+  const player = players.find((p) => p.index === character.index);
+  return player ? player.skills.eviteDangers || 0 : 0;
+}
+
+// Bombe au sol active la plus proche dont la zone couvre "character" -- rien s'il n'est dans
+// aucune (pas besoin de fuir une bombe qu'on ne risque pas).
+function nearestThreateningBomb(character) {
+  let nearest = null;
+  let nearestDist = Infinity;
+  for (const bomb of activeBombs) {
+    if (bomb.exploded) continue;
+    const dist = Math.hypot(character.x - bomb.x, character.y - bomb.y);
+    if (dist > BOMB_RADIUS || dist >= nearestDist) continue;
+    nearestDist = dist;
+    nearest = bomb;
+  }
+  return nearest;
+}
+
+// Tente de faire fuir "character" hors de danger -- renvoie true si une fuite est en cours ce
+// tour-ci (l'appelant doit alors lui laisser la priorité plutôt que de lancer un autre
+// déplacement par-dessus, ex. approcher un ennemi).
+function updateDangerAvoidance(character, now) {
+  const bomb = nearestThreateningBomb(character);
+  if (!bomb) return false;
+
+  const skillFraction = Math.min(10, Math.max(0, dangerAvoidanceSkillFor(character))) / 10;
+  if (now - bomb.plantedAt < DANGER_REACTION_MAX_DELAY_MS * (1 - skillFraction)) return false;
+
+  // Déjà en train de fuir CETTE bombe : laisse ce déplacement se terminer plutôt que d'en relancer
+  // un nouveau (avec un bruit different) à chaque image, ce qui empêcherait tout vrai progrès.
+  if (character.fleeingBombId === bomb.id && character.isMoving) return true;
+
+  const dx = character.x - bomb.x, dy = character.y - bomb.y;
+  const idealAngle = Math.atan2(dy, dx); // déjà la direction "loin de la bombe"
+  const angle = idealAngle + (Math.random() * 2 - 1) * DANGER_DIRECTION_MAX_NOISE_RAD * (1 - skillFraction);
+  const targetDist = BOMB_RADIUS + DANGER_MIN_MARGIN + (DANGER_MAX_MARGIN - DANGER_MIN_MARGIN) * skillFraction;
+
+  startMove(character, bomb.x + Math.cos(angle) * targetDist, bomb.y + Math.sin(angle) * targetDist);
+  character.fleeingBombId = bomb.id;
+  return true;
+}
+
 // "Jouent tout seuls" : un personnage NON sélectionné cherche activement l'ennemi le plus proche,
 // s'approche pour l'attaquer (voir orderAttack, qui gère le déplacement) et utilise ses
 // compétences dès qu'elles sont prêtes (avec un délai mini d'1s entre deux, et les sorts
@@ -919,6 +989,11 @@ const AUTO_ABILITY_INTERVAL_MS = 1000; // délai mini entre deux compétences la
 function updateAutoPlay(character) {
   if (character.selected || character.hp <= 0 || combatPhase !== 'active') return;
 
+  const now = performance.now();
+  // Priorité à la fuite (demande utilisateur explicite) : tant qu'un danger la justifie, aucune
+  // autre décision d'auto-play (approcher/attaquer/lancer un sort) ne prend le pas dessus.
+  if (updateDangerAvoidance(character, now)) return;
+
   const target = nearestEnemyTo(character);
   if (!target) return;
 
@@ -928,7 +1003,6 @@ function updateAutoPlay(character) {
     orderAttack(character, target);
   }
 
-  const now = performance.now();
   if (now - (character.lastAutoSkillAt || 0) < AUTO_ABILITY_INTERVAL_MS) return;
 
   const recentlyHit = now - (character.lastDamageTakenAt || 0) <= AUTO_DEFENSIVE_WINDOW_MS;
@@ -3687,7 +3761,7 @@ function drawSkillRow(player, key, label, x, y, width) {
 function drawPlayerScene() {
   const cardX = LIST_PADDING_X;
   const cardWidth = canvas.width - LIST_PADDING_X * 2;
-  const cardHeight = 158;
+  const cardHeight = 198; // +40 pour la 3e ligne de compétence (Évitement des dangers)
   const viewTop = TOP_BANNER_HEIGHT;
   let y = viewTop + 16 - getSceneScrollY('joueur');
 
@@ -3739,7 +3813,10 @@ function drawPlayerScene() {
     rowY += 22;
 
     rowY = drawSkillRow(player, 'apm', 'APM', cardX + CARD_PADDING, rowY, cardWidth - CARD_PADDING * 2);
-    drawSkillRow(player, 'connaissanceJeu', 'Connaissance du jeu', cardX + CARD_PADDING, rowY, cardWidth - CARD_PADDING * 2);
+    rowY = drawSkillRow(player, 'connaissanceJeu', 'Connaissance du jeu', cardX + CARD_PADDING, rowY, cardWidth - CARD_PADDING * 2);
+    // Seule des 3 à avoir un effet réel pour l'instant (voir updateDangerAvoidance) : plus haute,
+    // plus efficace pour s'écarter tout seul des bombes au sol sans ordre du joueur.
+    drawSkillRow(player, 'eviteDangers', 'Évitement des dangers', cardX + CARD_PADDING, rowY, cardWidth - CARD_PADDING * 2);
 
     y += cardHeight + CARD_GAP;
   }
@@ -4191,6 +4268,7 @@ function resetTransientCombatState(entity) {
   entity.nextBombCheckAt = 0;
   entity.nextFlyingBombAt = 0;
   entity.flyingBombCounted = false;
+  entity.fleeingBombId = null;
 }
 
 // Remet les personnages sélectionnés en place au début d'un combat (PV/mana pleins, plus d'effets
