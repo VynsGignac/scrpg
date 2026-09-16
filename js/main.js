@@ -365,9 +365,12 @@ const players = chosenNames.map((name, i) => ({
   level: 1, xp: 0,
   // eviteDangers (0-10, demande utilisateur explicite) : efficacité de l'auto-play à s'écarter
   // des bombes au sol quand personne ne pilote directement le personnage (voir
-  // updateDangerAvoidance) -- même échelle que SKILL_MAX (10), contrairement à apm/connaissanceJeu
-  // qui restent pour l'instant de simples emplacements sans effet réel.
-  skills: { apm: randomInt(0, 5), connaissanceJeu: randomInt(0, 5), eviteDangers: randomInt(0, 5) },
+  // updateDangerAvoidance). respecteStrategie (0-10, demande utilisateur explicite) : probabilité
+  // que le déplacement aléatoire (voir updateWander) choisisse un point dans la zone de stratégie
+  // du personnage (voir strategyZone) plutôt qu'un point complètement au hasard. Même échelle que
+  // SKILL_MAX (10), contrairement à apm/connaissanceJeu qui restent pour l'instant de simples
+  // emplacements sans effet réel.
+  skills: { apm: randomInt(0, 5), connaissanceJeu: randomInt(0, 5), eviteDangers: randomInt(0, 5), respecteStrategie: randomInt(0, 5) },
 }));
 
 // Les 4 premières classes tirées au hasard forment le groupe de départ.
@@ -1118,6 +1121,72 @@ function updateDangerAvoidance(character, now) {
   return true;
 }
 
+// ------------------------------------------------------------
+// Déplacement aléatoire naturel (demande utilisateur explicite) : un personnage NON sélectionné,
+// déjà à portée de sa cible (donc jamais AU DÉTRIMENT de son attaque -- voir la garde dans
+// updateAutoPlay), change périodiquement de position sans jamais sortir de portée d'attaque -- à
+// distance, n'importe où dans rangeFor(character) ; au corps à corps, sur l'anneau de contact
+// autour de la cible (avoidHalfExtent, la même distance que le corps à corps normal), ce qui revient
+// à se replacer d'un autre côté de la cible plutôt qu'à s'en éloigner. Réglable par joueur (0 à 10,
+// player.skills.respecteStrategie, onglet Joueur) : probabilité qu'un déplacement choisisse un
+// point dans la zone de stratégie dessinée (voir strategyZone/drawStrategyOverlay) plutôt qu'un
+// point complètement au hasard -- 0% à un score de 0 (toujours au hasard), 100% à 10 (toujours
+// dans la zone, quand elle existe). Le point choisi dans la zone est ensuite ramené à la bonne
+// distance de la cible (clampPointDistance) : jamais de sortie de portée, même si la zone dessinée
+// déborde largement au-delà.
+// ------------------------------------------------------------
+const WANDER_INTERVAL_MS = 3000;
+const WANDER_INTERVAL_JITTER_MS = 2000;
+
+function respectStrategySkillFor(character) {
+  const player = players.find((p) => p.index === character.index);
+  return player ? player.skills.respecteStrategie || 0 : 0;
+}
+
+function randomPointInZone(zone) {
+  const stamp = zone[Math.floor(Math.random() * zone.length)];
+  const angle = Math.random() * Math.PI * 2;
+  const dist = Math.random() * stamp.radius;
+  return { x: stamp.x + Math.cos(angle) * dist, y: stamp.y + Math.sin(angle) * dist };
+}
+
+// Ramène "point" à une distance de "target" comprise entre minDist et maxDist (le long de la même
+// direction) -- garantit qu'un point tiré de la zone de stratégie reste une destination valide
+// (à portée d'attaque) même s'il est en réalité bien plus loin/plus près.
+function clampPointDistance(point, target, minDist, maxDist) {
+  const dx = point.x - target.x, dy = point.y - target.y;
+  const dist = Math.hypot(dx, dy) || 1;
+  const scale = Math.min(maxDist, Math.max(minDist, dist)) / dist;
+  return { x: target.x + dx * scale, y: target.y + dy * scale };
+}
+
+function updateWander(character, now) {
+  if (!character.nextWanderAt) character.nextWanderAt = now + WANDER_INTERVAL_MS + Math.random() * WANDER_INTERVAL_JITTER_MS;
+  if (now < character.nextWanderAt) return;
+  character.nextWanderAt = now + WANDER_INTERVAL_MS + Math.random() * WANDER_INTERVAL_JITTER_MS;
+
+  const target = character.attackTarget;
+  if (!target || target.hp <= 0) return;
+
+  const combat = combatProfile(character);
+  const meleeRingDist = avoidHalfExtent(character, target);
+  const minDist = combat.melee ? meleeRingDist : 0;
+  const maxDist = combat.melee ? meleeRingDist : rangeFor(character);
+
+  const skillFraction = Math.min(10, Math.max(0, respectStrategySkillFor(character))) / 10;
+  const zone = character.strategyZone;
+  let dest;
+  if (zone && zone.length > 0 && Math.random() < skillFraction) {
+    dest = clampPointDistance(randomPointInZone(zone), target, minDist, maxDist);
+  } else {
+    const angle = Math.random() * Math.PI * 2;
+    const dist = minDist + Math.random() * (maxDist - minDist);
+    dest = { x: target.x + Math.cos(angle) * dist, y: target.y + Math.sin(angle) * dist };
+  }
+
+  startMove(character, dest.x, dest.y);
+}
+
 // "Jouent tout seuls" : un personnage NON sélectionné cherche activement l'ennemi le plus proche,
 // s'approche pour l'attaquer (voir orderAttack, qui gère le déplacement) et utilise ses
 // compétences dès qu'elles sont prêtes (avec un délai mini d'1s entre deux, et les sorts
@@ -1140,6 +1209,10 @@ function updateAutoPlay(character) {
   // entre-temps) : (re)lance un ordre d'attaque, qui se charge lui-même de l'approche.
   if (character.attackTarget !== target || (!character.isMoving && !isInRangeOf(character, target))) {
     orderAttack(character, target);
+  } else if (isInRangeOf(character, target)) {
+    // Déjà à portée (donc jamais au détriment de l'attaque, demande utilisateur explicite) : peut
+    // se permettre un déplacement aléatoire de temps en temps -- voir updateWander.
+    updateWander(character, now);
   }
 
   if (now - (character.lastAutoSkillAt || 0) < AUTO_ABILITY_INTERVAL_MS) return;
@@ -3944,7 +4017,7 @@ function drawSkillRow(player, key, label, x, y, width) {
 function drawPlayerScene() {
   const cardX = LIST_PADDING_X;
   const cardWidth = canvas.width - LIST_PADDING_X * 2;
-  const cardHeight = 198; // +40 pour la 3e ligne de compétence (Évitement des dangers)
+  const cardHeight = 238; // +40 par ligne de compétence en plus des 2 de base (APM/Connaissance du jeu)
   const viewTop = TOP_BANNER_HEIGHT;
   let y = viewTop + 16 - getSceneScrollY('joueur');
 
@@ -3997,9 +4070,11 @@ function drawPlayerScene() {
 
     rowY = drawSkillRow(player, 'apm', 'APM', cardX + CARD_PADDING, rowY, cardWidth - CARD_PADDING * 2);
     rowY = drawSkillRow(player, 'connaissanceJeu', 'Connaissance du jeu', cardX + CARD_PADDING, rowY, cardWidth - CARD_PADDING * 2);
-    // Seule des 3 à avoir un effet réel pour l'instant (voir updateDangerAvoidance) : plus haute,
-    // plus efficace pour s'écarter tout seul des bombes au sol sans ordre du joueur.
-    drawSkillRow(player, 'eviteDangers', 'Évitement des dangers', cardX + CARD_PADDING, rowY, cardWidth - CARD_PADDING * 2);
+    // Les deux seules des 4 à avoir un effet réel pour l'instant (voir updateDangerAvoidance et
+    // updateWander) : plus hautes, plus efficaces pour s'écarter tout seul des bombes au sol, et
+    // pour respecter la zone de stratégie dessinée en se déplaçant au hasard pendant le combat.
+    rowY = drawSkillRow(player, 'eviteDangers', 'Évitement des dangers', cardX + CARD_PADDING, rowY, cardWidth - CARD_PADDING * 2);
+    drawSkillRow(player, 'respecteStrategie', 'Respect de la stratégie', cardX + CARD_PADDING, rowY, cardWidth - CARD_PADDING * 2);
 
     y += cardHeight + CARD_GAP;
   }
@@ -4453,6 +4528,7 @@ function resetTransientCombatState(entity) {
   entity.flyingBombCounted = false;
   entity.fleeingBombId = null;
   entity.bombIdentification = {};
+  entity.nextWanderAt = 0;
 }
 
 // Remet les personnages sélectionnés en place au début d'un combat (PV/mana pleins, plus d'effets
