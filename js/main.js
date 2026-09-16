@@ -87,6 +87,15 @@ const CLASS_SPRITES = {
   Gardien: loadClassSprites('gardien'),
   Paladin: loadClassSprites('paladin'),
 };
+// Même principe que CLASS_SPRITES mais pour les ennemis du donjon des gobelins (demande
+// utilisateur explicite, images fournies), indexé par ENCOUNTERS[].name plutôt que className
+// (voir spriteForCharacter) -- les ennemis n'ont pas de className.
+const ENEMY_SPRITES = {
+  'Gobelin': loadClassSprites('gobelin'),
+  'Archer gobelin': loadClassSprites('archer-gobelin'),
+  'Artificier gobelin': loadClassSprites('artificier-gobelin'),
+  "Mannequin d'entraînement": loadClassSprites('mannequin'),
+};
 // 50% plus gros que l'emprise réelle du personnage (demande utilisateur explicite) -- seul
 // l'affichage grossit, tout le reste (barre de PV, badges, hit-box, déplacement...) reste basé sur
 // character.size, donc rien d'autre ne bouge.
@@ -3263,7 +3272,7 @@ function drawArtificierProximityZone(enemy) {
 // attaque"). "flip" indique un retournement horizontal (poses latérales orientées à gauche dans
 // l'image d'origine, réutilisées pour la droite).
 function spriteForCharacter(character) {
-  const sprites = CLASS_SPRITES[character.className];
+  const sprites = CLASS_SPRITES[character.className] || ENEMY_SPRITES[character.name];
   if (!sprites) return null;
 
   let dx = 0, dy = 0, attacking = false;
