@@ -1454,8 +1454,8 @@ function drawProjectiles(now) {
 
 // ------------------------------------------------------------------
 // Animation de coup au corps à corps (demande utilisateur explicite, remplace l'ancien anneau de
-// dégâts générique -- voir sa suppression dans dealDamage) : un simple arc de cercle blanc, à un
-// angle aléatoire, qui flashe puis s'estompe sur la cible touchée. Accroché directement à
+// dégâts générique -- voir sa suppression dans dealDamage) : un simple arc de cercle blanc, centré
+// sur l'attaquant et orienté vers la cible, qui flashe puis s'estompe. Accroché directement à
 // dealDamage comme le projectile ci-dessus : couvre donc l'attaque de base ET les sorts de mêlée
 // sans instrumenter chacun individuellement. Réservé aux attaquants au corps à corps
 // (combatProfile.melee) -- le pendant du projectile, réservé lui aux attaquants à distance.
@@ -1464,8 +1464,9 @@ const meleeSlashes = [];
 const MELEE_SLASH_DURATION_MS = 250;
 const MELEE_SLASH_ARC_RAD = Math.PI / 3; // 60° de chaque côté, donc 120° au total
 
-function spawnMeleeSlash(x, y, size) {
-  meleeSlashes.push({ x, y, size, angle: Math.random() * Math.PI * 2, createdAt: performance.now() });
+function spawnMeleeSlash(sourceX, sourceY, sourceSize, targetX, targetY) {
+  const angle = Math.atan2(targetY - sourceY, targetX - sourceX);
+  meleeSlashes.push({ x: sourceX, y: sourceY, size: sourceSize, angle, createdAt: performance.now() });
 }
 
 function updateMeleeSlashes(now) {
@@ -1616,7 +1617,7 @@ function dealDamage(target, amount, rgb, source, isCrit, skillLabel) {
   if (source && !combatProfile(source).melee && skillLabel !== 'Bombe' && skillLabel !== 'Bombe volante') {
     spawnProjectile(source.x, source.y, target.x, target.y, source.color);
   } else if (source && combatProfile(source).melee) {
-    spawnMeleeSlash(target.x, target.y, target.size);
+    spawnMeleeSlash(source.x, source.y, source.size, target.x, target.y);
   }
   // Sert à l'IA pour savoir si elle vient de se faire attaquer (voir AUTO_DEFENSIVE_SKILLS).
   if (target.playerControlled) target.lastDamageTakenAt = now;
