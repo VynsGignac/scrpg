@@ -348,6 +348,13 @@ const roster = CHARACTER_CLASSES.map((className, i) => {
     label: className.charAt(0), // ex. "M" pour Mage -- affiché sur le carré (voir drawCharacter)
     baseStats, stats, hp: hpMax, hpMax, mana: manaMax, manaMax, threat: 0, lastThreatAt: 0,
     equipment: createEmptyEquipment(),
+    // Zone de stratégie (demande utilisateur explicite) : dessinée à la main par le joueur avant
+    // un combat (voir drawStrategyOverlay), persiste d'un combat à l'autre puisque stockée
+    // directement sur l'entrée du roster (characters, plus bas, ne fait que pointer dessus, pas de
+    // copie). Liste de points peints au pinceau ({x, y, radius}, voir addStrategyPoint) -- son
+    // RESPECT par l'IA (nouveau paramètre à venir, demande utilisateur explicite : "dans un second
+    // temps") n'est pas encore branché ; pour l'instant, la zone est juste dessinable et visible.
+    strategyZone: [],
   };
 });
 
@@ -545,6 +552,124 @@ function startPullCountdown() {
   if (combatPhase !== 'prePull') return;
   combatPhase = 'countdown';
   pullCountdownEndAt = performance.now() + PULL_COUNTDOWN_MS;
+  strategyMode = false; // filet de sécurité : le bouton PULL n'est de toute façon jamais affiché pendant ce mode
+}
+
+// ------------------------------------------------------------
+// Mode "Stratégie" (demande utilisateur explicite) : accessible uniquement pendant 'prePull' (voir
+// le bouton dans drawPullOverlay), remplace le bouton PULL et le bandeau de sélection par un mode
+// de dessin -- on choisit un personnage (tap sur son carré, réutilise la sélection normale,
+// character.selected) puis on peint sa zone au doigt/à la souris (voir addStrategyPoint), comme un
+// pinceau : chaque point peint est mémorisé avec un rayon (STRATEGY_BRUSH_RADIUS), la zone entière
+// étant l'union de ces cercles -- pas besoin de gérer un polygone fermé. Stockée directement sur
+// l'entrée du roster (voir sa création plus haut) donc persiste d'un combat à l'autre pour ce
+// personnage. Le RESPECT de cette zone par l'IA (nouveau paramètre à venir, demande utilisateur
+// explicite : "dans un second temps") n'est pas encore branché ici -- pour l'instant, la zone est
+// seulement dessinable et visible.
+// ------------------------------------------------------------
+let strategyMode = false;
+let strategyPainting = false;
+const STRATEGY_BRUSH_RADIUS = 40;
+const STRATEGY_BRUSH_SPACING = 18; // distance mini entre deux points peints, pour ne pas saturer le tableau
+
+function strategyHitCharacterAt(x, y) {
+  for (let i = characters.length - 1; i >= 0; i--) {
+    const c = characters[i];
+    if (c.playerControlled && isInsideCharacter(c, x, y)) return c;
+  }
+  return null;
+}
+
+function addStrategyPoint(character, x, y) {
+  if (!character.strategyZone) character.strategyZone = [];
+  const zone = character.strategyZone;
+  const last = zone[zone.length - 1];
+  if (last && Math.hypot(x - last.x, y - last.y) < STRATEGY_BRUSH_SPACING) return;
+  zone.push({ x, y, radius: STRATEGY_BRUSH_RADIUS });
+}
+
+function handleStrategyPointerDown(x, y) {
+  const hitCharacter = strategyHitCharacterAt(x, y);
+  if (hitCharacter) {
+    deselectAll();
+    hitCharacter.selected = true;
+    return;
+  }
+  const target = characters.find((c) => c.selected);
+  if (!target) return; // pas de personnage choisi : rien à peindre
+  strategyPainting = true;
+  addStrategyPoint(target, x, y);
+}
+
+function handleStrategyPointerMove(x, y) {
+  if (!strategyPainting) return;
+  const target = characters.find((c) => c.selected);
+  if (!target) {
+    strategyPainting = false;
+    return;
+  }
+  addStrategyPoint(target, x, y);
+}
+
+function handleStrategyPointerUp() {
+  strategyPainting = false;
+}
+
+// Zones de tous les personnages (celle du personnage choisi plus visible que les autres) + une
+// case par personnage pour changer de sélection + "Effacer"/"Terminé". Dessinée à la place du
+// bouton PULL et du bandeau de sélection tant que strategyMode est actif (voir draw()).
+function drawStrategyOverlay() {
+  const selected = characters.find((c) => c.selected);
+
+  for (const character of characters) {
+    if (!character.playerControlled || !character.strategyZone || character.strategyZone.length === 0) continue;
+    const isSelected = character === selected;
+    ctx.fillStyle = `${character.color}${isSelected ? '55' : '22'}`;
+    for (const point of character.strategyZone) {
+      ctx.beginPath();
+      ctx.arc(point.x, point.y, point.radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  const barY = TOP_BANNER_HEIGHT;
+  ctx.fillStyle = 'rgba(16, 21, 26, 0.92)';
+  ctx.fillRect(0, barY, canvas.width, 40);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = 'bold 13px sans-serif';
+  ctx.fillStyle = '#ffd54f';
+  ctx.fillText(
+    selected ? `Dessinez la zone de ${selected.className}` : 'Stratégie : choisissez un personnage',
+    canvas.width / 2, barY + 20
+  );
+
+  const gap = 12;
+  const buttonWidth = Math.min(140, (canvas.width - LIST_PADDING_X * 2 - gap) / 2);
+  const buttonHeight = 48;
+  const totalWidth = buttonWidth * 2 + gap;
+  const buttonY = canvas.height - buttonHeight - 16;
+  const firstX = (canvas.width - totalWidth) / 2;
+
+  ctx.font = 'bold 14px sans-serif';
+  // "Effacer" : sans effet (et grisé) tant qu'aucun personnage n'est choisi.
+  ctx.fillStyle = selected ? '#4a1f1f' : '#2a2a2a';
+  ctx.fillRect(firstX, buttonY, buttonWidth, buttonHeight);
+  ctx.fillStyle = selected ? '#ef5350' : '#ffffff44';
+  ctx.fillText('Effacer', firstX + buttonWidth / 2, buttonY + buttonHeight / 2 + 1);
+  if (selected) {
+    registerHitRect(firstX, buttonY, buttonWidth, buttonHeight, () => { selected.strategyZone = []; });
+  }
+
+  const secondX = firstX + buttonWidth + gap;
+  ctx.fillStyle = '#2e7d32';
+  ctx.fillRect(secondX, buttonY, buttonWidth, buttonHeight);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText('Terminé', secondX + buttonWidth / 2, buttonY + buttonHeight / 2 + 1);
+  registerHitRect(secondX, buttonY, buttonWidth, buttonHeight, () => {
+    strategyMode = false;
+    deselectAll();
+  });
 }
 
 // Un ennemi (voir ENCOUNTERS) définit son propre profil de combat (combatOverride) puisqu'il n'a
@@ -2636,6 +2761,7 @@ function clearPointerState() {
   hoveredSkillsCharacter = null;
   pendingHit = null;
   scrollDragActive = false;
+  strategyPainting = false;
 }
 
 canvas.addEventListener('pointerdown', (event) => {
@@ -2691,6 +2817,14 @@ canvas.addEventListener('pointerdown', (event) => {
   // bataille figé en dessous, seuls les boutons de l'écran de fin (déjà gérés ci-dessus) réagissent.
   if (currentScene !== 'combat' || combatPhase === 'victory' || combatPhase === 'defeat') return;
 
+  // Mode "Stratégie" (voir drawStrategyOverlay) : intercepte tout ce qui touche le champ de
+  // bataille AVANT la sélection/le déplacement normal ci-dessous, pour choisir un personnage ou
+  // peindre sa zone à la place.
+  if (strategyMode) {
+    handleStrategyPointerDown(x, y);
+    return;
+  }
+
   pointerId = event.pointerId;
   pointerActive = true;
   activeTarget = hitTestCharacter(x, y);
@@ -2742,6 +2876,14 @@ canvas.addEventListener('pointermove', (event) => {
   dragPreviewPath = computeAvoidancePath(activeTarget, activeTarget.x, activeTarget.y, dest.x, dest.y);
 });
 
+// Peinture de la zone en mode "Stratégie" (voir handleStrategyPointerDown) -- indépendant du drag
+// de personnage ci-dessus (strategyPainting, pas pointerActive/activeTarget).
+canvas.addEventListener('pointermove', (event) => {
+  if (!strategyMode || !strategyPainting) return;
+  const { x, y } = getPointerPos(event);
+  handleStrategyPointerMove(x, y);
+});
+
 // Survol (souris/web) indépendant du drag ci-dessus -- toujours actif, pas seulement pendant un
 // appui (voir hoverRects/registerHoverRect). Explicitement ignoré sur tactile (pointerType
 // 'touch') : le doigt utilise l'appui long géré dans pointerdown/pointerup à la place.
@@ -2768,6 +2910,11 @@ canvas.addEventListener('pointerup', (event) => {
     const action = pendingHit;
     pendingHit = null;
     if (hitDist <= CLICK_THRESHOLD) action.onClick();
+    return;
+  }
+
+  if (strategyMode) {
+    handleStrategyPointerUp();
     return;
   }
 
@@ -3482,6 +3629,28 @@ function drawPullOverlay(now) {
     ctx.fillText('PULL', areaCenterX, buttonY + buttonHeight / 2 + 1);
 
     registerHitRect(buttonX, buttonY, buttonWidth, buttonHeight, startPullCountdown);
+
+    // Bouton "Stratégie" (demande utilisateur explicite : "en bas de l'écran") -- ouvre
+    // drawStrategyOverlay, qui prend le relais de tout cet affichage tant qu'il est actif.
+    const strategyWidth = 160;
+    const strategyHeight = 48;
+    const strategyX = areaCenterX - strategyWidth / 2;
+    const strategyY = canvas.height - strategyHeight - 16;
+
+    ctx.fillStyle = '#37474f';
+    ctx.fillRect(strategyX, strategyY, strategyWidth, strategyHeight);
+    ctx.strokeStyle = '#ffd54f88';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(strategyX + 0.5, strategyY + 0.5, strategyWidth - 1, strategyHeight - 1);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 15px sans-serif';
+    ctx.fillStyle = '#ffd54f';
+    ctx.fillText('Stratégie', areaCenterX, strategyY + strategyHeight / 2 + 1);
+    registerHitRect(strategyX, strategyY, strategyWidth, strategyHeight, () => {
+      strategyMode = true;
+      deselectAll();
+    });
   } else if (combatPhase === 'countdown') {
     const remaining = Math.max(0, Math.ceil((pullCountdownEndAt - now) / 1000));
     const centerY = areaTop + (canvas.height - areaTop) / 2;
@@ -4353,6 +4522,7 @@ function enterCombatLevel(index) {
   isTrainingCombat = false;
   threatPanelEnemy = null;
   expandedStatsCharacter = null;
+  strategyMode = false;
   resetCombatEncounter(index);
   combatStats = createCombatStats(); // après resetCombatEncounter : a besoin des personnages déjà en place
   currentScene = 'combat';
@@ -4371,6 +4541,7 @@ function enterTrainingCombat() {
   isTrainingCombat = true;
   threatPanelEnemy = null;
   expandedStatsCharacter = null;
+  strategyMode = false;
 
   const enemy = enemies[0];
   if (enemy) {
@@ -4977,12 +5148,14 @@ function draw() {
 
     if (combatPhase === 'victory' || combatPhase === 'defeat') {
       drawCombatEndScreen(performance.now());
+    } else if (strategyMode) {
+      drawStrategyOverlay();
     } else {
       drawPullOverlay(performance.now());
       if (threatPanelEnemy) drawThreatPanel(threatPanelEnemy, performance.now());
 
       const selected = characters.find((c) => c.selected);
-      if (selected) drawSelectionBanner(selected);
+      if (selected && combatPhase !== 'prePull') drawSelectionBanner(selected);
     }
   } else if (currentScene === 'joueur') {
     drawPlayerScene();
