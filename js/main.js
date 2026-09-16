@@ -446,7 +446,7 @@ const TUTORIAL_ENCOUNTERS = [
     combat: { melee: true, stat: 'force' }, trainingDummy: true, forcedClasses: ['Guerrier'],
   },
   {
-    name: 'Duelliste vétéran', label: 'D', color: '#c62828', size: 40, hpMax: 200, statValue: 26,
+    name: 'Duelliste vétéran', label: 'D', color: '#c62828', size: 40, hpMax: 100, statValue: 26,
     combat: { melee: true, stat: 'force' }, forcedClasses: ['Guerrier'],
   },
   {
