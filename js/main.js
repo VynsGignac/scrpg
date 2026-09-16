@@ -420,15 +420,28 @@ applyActivePartyToCombatSlots();
 // même au corps à corps si un joueur vient à lui. flyingBombAttack : lâche en plus une bombe
 // volante (voir launchFlyingBomb/updateFlyingBombAttack) selon un délai variable (base +
 // bonus de proximité).
+// Chaque rond a une liste d'ennemis (level.enemies, demande utilisateur explicite : 3 adversaires
+// au rond 4 du Tutoriel ci-dessous) -- un seul élément pour tous les ronds de ce donjon-ci pour
+// l'instant, voir resetCombatEncounter qui boucle dessus.
 const ENCOUNTERS = [
-  { name: 'Gobelin', label: 'G', color: '#8bc34a', size: 33, hpMax: 1500, statValue: 10, combat: { melee: true, stat: 'force' }, bombAttack: { targeting: 'noAggroPlayer', count: 1 } },
-  { name: 'Archer gobelin', label: 'A', color: '#cfd8dc', size: 39, hpMax: 2000, statValue: 16, combat: { melee: false, stat: 'force' }, bombAttack: { targeting: 'random', count: 3 } },
-  { name: 'Artificier gobelin', label: 'Ar', color: '#f4511e', size: 48, hpMax: 2000, statValue: 26, combat: { melee: true, stat: 'force' }, stationary: true, flyingBombAttack: true },
-  { name: 'Sorcière', label: 'S', color: '#ab47bc', size: 38, hpMax: 600, statValue: 22, combat: { melee: false, stat: 'force' } },
-  { name: 'Seigneur des ombres', label: 'B', color: '#c62828', size: 57, hpMax: 5000, statValue: 30, combat: { melee: true, stat: 'force' }, isBoss: true },
+  { label: 'G', enemies: [
+    { name: 'Gobelin', label: 'G', color: '#8bc34a', size: 33, hpMax: 1500, statValue: 10, combat: { melee: true, stat: 'force' }, bombAttack: { targeting: 'noAggroPlayer', count: 1 } },
+  ] },
+  { label: 'A', enemies: [
+    { name: 'Archer gobelin', label: 'A', color: '#cfd8dc', size: 39, hpMax: 2000, statValue: 16, combat: { melee: false, stat: 'force' }, bombAttack: { targeting: 'random', count: 3 } },
+  ] },
+  { label: 'Ar', enemies: [
+    { name: 'Artificier gobelin', label: 'Ar', color: '#f4511e', size: 48, hpMax: 2000, statValue: 26, combat: { melee: true, stat: 'force' }, stationary: true, flyingBombAttack: true },
+  ] },
+  { label: 'S', enemies: [
+    { name: 'Sorcière', label: 'S', color: '#ab47bc', size: 38, hpMax: 600, statValue: 22, combat: { melee: false, stat: 'force' } },
+  ] },
+  { label: 'B', isBoss: true, enemies: [
+    { name: 'Seigneur des ombres', label: 'B', color: '#c62828', size: 57, hpMax: 5000, statValue: 30, combat: { melee: true, stat: 'force' } },
+  ] },
 ];
 
-// Les 3 premiers combats du donjon Tutoriel (demande utilisateur explicite, voir DUNGEONS) :
+// Les 4 premiers combats du donjon Tutoriel (demande utilisateur explicite, voir DUNGEONS) :
 // - Rond 1 : un seul personnage (Guerrier, imposé via forcedClasses -- voir applyEncounterParty)
 //   contre un ennemi à peu de PV qui ne riposte jamais ni ne se déplace (trainingDummy, même
 //   comportement d'IA que le mannequin d'entraînement de la Guilde -- voir updateEnemyAI). Juste
@@ -437,21 +450,39 @@ const ENCOUNTERS = [
 //   sont volontairement réglés pour qu'une attaque de base seule perde le combat (le Guerrier meurt
 //   avant d'avoir fait assez de dégâts), pour forcer l'usage de ses compétences (Posture défensive
 //   pour encaisser, Frappe rageuse/Cri de rage pour finir plus vite).
-// - Rond 3 : Gardien (tank, menace x2 -- voir TANK_THREAT_CLASSES) + Voleur (dps) contre un seul
-//   ennemi, pour enseigner la gestion de l'aggro : si le Voleur tape sans que le Gardien tape aussi,
-//   l'ennemi change de cible vers le Voleur (plus fragile).
+// - Rond 3 : Gardien (tank, menace x2 -- voir TANK_THREAT_CLASSES) + Chasseur (dps à distance)
+//   contre un seul ennemi, pour enseigner la gestion de l'aggro : si le Chasseur tape sans que le
+//   Gardien tape aussi, l'ennemi change de cible vers lui (plus fragile).
+// - Rond 4 : les 3 classes déjà utilisées (Guerrier/Gardien/Chasseur) + un Prêtre (soigneur),
+//   4 personnages contre 3 ennemis basiques (sans bombAttack/stationary/flyingBombAttack -- "aucune
+//   compétence spéciale"), pour enseigner le combat à plusieurs cibles/la répartition des dégâts
+//   subis.
 const TUTORIAL_ENCOUNTERS = [
   {
-    name: "Mannequin d'entraînement", label: 'C', color: '#6d4c41', size: 42, hpMax: 60, statValue: 0,
-    combat: { melee: true, stat: 'force' }, trainingDummy: true, forcedClasses: ['Guerrier'],
+    label: 'C', forcedClasses: ['Guerrier'],
+    enemies: [
+      { name: "Mannequin d'entraînement", label: 'C', color: '#6d4c41', size: 42, hpMax: 60, statValue: 0, combat: { melee: true, stat: 'force' }, trainingDummy: true },
+    ],
   },
   {
-    name: 'Duelliste vétéran', label: 'D', color: '#c62828', size: 40, hpMax: 100, statValue: 26,
-    combat: { melee: true, stat: 'force' }, forcedClasses: ['Guerrier'],
+    label: 'D', forcedClasses: ['Guerrier'],
+    enemies: [
+      { name: 'Duelliste vétéran', label: 'D', color: '#c62828', size: 40, hpMax: 100, statValue: 26, combat: { melee: true, stat: 'force' } },
+    ],
   },
   {
-    name: 'Brute des faubourgs', label: 'B', color: '#5d4037', size: 46, hpMax: 350, statValue: 20,
-    combat: { melee: true, stat: 'force' }, forcedClasses: ['Gardien', 'Voleur'],
+    label: 'B', forcedClasses: ['Gardien', 'Chasseur'],
+    enemies: [
+      { name: 'Brute des faubourgs', label: 'B', color: '#5d4037', size: 46, hpMax: 350, statValue: 20, combat: { melee: true, stat: 'force' } },
+    ],
+  },
+  {
+    label: 'E', forcedClasses: ['Guerrier', 'Gardien', 'Chasseur', 'Prêtre'],
+    enemies: [
+      { name: 'Émeutier', label: 'E', color: '#795548', size: 36, hpMax: 220, statValue: 16, combat: { melee: true, stat: 'force' } },
+      { name: 'Émeutier', label: 'E', color: '#795548', size: 36, hpMax: 220, statValue: 16, combat: { melee: true, stat: 'force' } },
+      { name: 'Émeutier', label: 'E', color: '#795548', size: 36, hpMax: 220, statValue: 16, combat: { melee: true, stat: 'force' } },
+    ],
   },
 ];
 
@@ -459,14 +490,15 @@ const TUTORIAL_ENCOUNTERS = [
 // Choisit un personnage au hasard à sa première action et le poursuit/attaque pendant tout le
 // combat (voir updateEnemyAI) -- ne change jamais de cible. Ses stats de départ viennent du
 // premier combat (voir resetCombatEncounter, appelé à chaque rond choisi sur la carte).
-const bossSpawn = clampPointToField({ size: ENCOUNTERS[0].size }, cx, cy - 220);
+const initialEnemy = ENCOUNTERS[0].enemies[0];
+const bossSpawn = clampPointToField({ size: initialEnemy.size }, cx, cy - 220);
 characters.push({
-  x: bossSpawn.x, y: bossSpawn.y, size: ENCOUNTERS[0].size, color: ENCOUNTERS[0].color,
+  x: bossSpawn.x, y: bossSpawn.y, size: initialEnemy.size, color: initialEnemy.color,
   selected: false, isMoving: false, playerControlled: false,
-  hp: ENCOUNTERS[0].hpMax, hpMax: ENCOUNTERS[0].hpMax, label: ENCOUNTERS[0].label, name: ENCOUNTERS[0].name,
+  hp: initialEnemy.hpMax, hpMax: initialEnemy.hpMax, label: initialEnemy.label, name: initialEnemy.name,
   facingAngle: Math.PI / 2, // tourné vers le bas (zone de départ des personnages) -- voir Coup sournois
-  combatOverride: ENCOUNTERS[0].combat,
-  stats: { force: ENCOUNTERS[0].statValue }, // seule stat nécessaire au calcul de dégâts générique
+  combatOverride: initialEnemy.combat,
+  stats: { force: initialEnemy.statValue }, // seule stat nécessaire au calcul de dégâts générique
 });
 
 const enemies = characters.filter((c) => !c.playerControlled);
@@ -2654,9 +2686,10 @@ function castSkill(character, skillId) {
   if (skill.targeting === 'enemy') {
     // Respecte la cible déjà choisie à l'attaque de base (voir orderAttack/updateCombat) --
     // permet de viser la bombe volante de l'Artificier gobelin avec un sort, pas seulement
-    // l'ennemi principal (demande utilisateur explicite). Repli sur l'ennemi principal si rien
-    // n'a encore été ciblé manuellement, comme avant.
-    const target = character.attackTarget || enemies[0];
+    // l'ennemi principal (demande utilisateur explicite). Repli sur l'ennemi vivant le plus proche
+    // si rien n'a encore été ciblé manuellement (plusieurs ennemis possibles, voir
+    // TUTORIAL_ENCOUNTERS rond 4 -- enemies[0] pourrait être un ennemi déjà mort).
+    const target = character.attackTarget || nearestEnemyTo(character);
     if (!target || target.hp <= 0 || !isInRangeOf(character, target)) return false;
     skill.cast(character, target);
   } else {
@@ -4832,26 +4865,43 @@ function resetPlayerCombatState() {
   }
 }
 
+// Un "rond" (voir ENCOUNTERS/TUTORIAL_ENCOUNTERS) peut avoir plusieurs ennemis (level.enemies,
+// demande utilisateur explicite : 3 adversaires au rond 4 du Tutoriel) -- repart donc à chaque
+// fois d'une liste neuve plutôt que de reconfigurer un unique objet enemies[0] : les anciens
+// ennemis (1, 2 ou 3 selon le rond précédent) sont retirés de characters/enemies, puis un objet
+// par ennemi de ce rond est recréé et poussé dans les deux (mêmes références, comme avant --
+// characters contient les personnages ET les ennemis, enemies n'est qu'un sous-ensemble filtré).
+// Répartis horizontalement (squareXFor, comme les personnages) pour ne pas se superposer.
 function resetCombatEncounter(levelIndex) {
-  const encounter = DUNGEONS[selectedDungeon].encounters[levelIndex];
-  const enemy = enemies[0];
-  if (enemy && encounter) {
-    enemy.name = encounter.name;
-    enemy.label = encounter.label;
-    enemy.color = encounter.color;
-    enemy.size = encounter.size;
-    enemy.hpMax = encounter.hpMax;
-    enemy.hp = encounter.hpMax;
-    enemy.combatOverride = encounter.combat;
-    enemy.stats = { force: encounter.statValue };
-    enemy.trainingDummy = !!encounter.trainingDummy;
-    enemy.bombAttack = encounter.bombAttack || null;
-    enemy.stationary = !!encounter.stationary;
-    enemy.flyingBombAttack = !!encounter.flyingBombAttack;
-    resetTransientCombatState(enemy);
-    const spawn = clampPointToField({ size: encounter.size }, cx, defaultEnemySpawnY());
-    enemy.x = spawn.x;
-    enemy.y = spawn.y;
+  const level = DUNGEONS[selectedDungeon].encounters[levelIndex];
+
+  const playerEntities = characters.filter((c) => c.playerControlled);
+  characters.length = 0;
+  characters.push(...playerEntities);
+  enemies.length = 0;
+
+  if (level) {
+    const configs = level.enemies;
+    configs.forEach((config, i) => {
+      const spawnX = squareXFor(i, configs.length);
+      const spawn = clampPointToField({ size: config.size }, spawnX, defaultEnemySpawnY());
+      const enemy = {
+        selected: false, isMoving: false, playerControlled: false,
+        facingAngle: Math.PI / 2,
+        name: config.name, label: config.label, color: config.color, size: config.size,
+        hpMax: config.hpMax, hp: config.hpMax,
+        combatOverride: config.combat,
+        stats: { force: config.statValue },
+        trainingDummy: !!config.trainingDummy,
+        bombAttack: config.bombAttack || null,
+        stationary: !!config.stationary,
+        flyingBombAttack: !!config.flyingBombAttack,
+        x: spawn.x, y: spawn.y,
+      };
+      resetTransientCombatState(enemy);
+      characters.push(enemy);
+      enemies.push(enemy);
+    });
   }
   activeBombs = [];
   flyingBombs = [];
@@ -4895,28 +4945,41 @@ function enterTrainingCombat() {
     savedActivePartyIndices = null;
   }
 
-  const enemy = enemies[0];
-  if (enemy) {
-    enemy.name = "Mannequin d'entraînement";
-    enemy.label = 'M';
-    enemy.color = '#6d4c41';
-    enemy.size = 42; // 56 * 75% (demande utilisateur explicite : tailles réduites à 75%)
-    enemy.hpMax = TRAINING_DUMMY_HP;
-    enemy.hp = TRAINING_DUMMY_HP;
-    enemy.combatOverride = { melee: true, stat: 'force' };
-    enemy.stats = { force: 0 };
-    enemy.trainingDummy = true;
-    enemy.bombAttack = null;
-    enemy.stationary = false;
-    enemy.flyingBombAttack = false;
-    resetTransientCombatState(enemy);
-    // Plus bas que l'ennemi habituel (voir resetCombatEncounter) : au niveau du premier tiers de
-    // la zone de jeu visible, sous le bandeau du haut (demande utilisateur explicite).
-    const dummyY = TOP_BANNER_HEIGHT + (canvas.height - TOP_BANNER_HEIGHT) / 3;
-    const spawn = clampPointToField({ size: enemy.size }, cx, dummyY);
-    enemy.x = spawn.x;
-    enemy.y = spawn.y;
-  }
+  // Repart d'une liste d'ennemis neuve (voir resetCombatEncounter) : le dernier donjon joué peut
+  // avoir laissé plusieurs ennemis (voir TUTORIAL_ENCOUNTERS rond 4) -- on les retire tous et on
+  // recrée un unique mannequin, plutôt que de ne reconfigurer que enemies[0] et laisser les autres
+  // traîner dans characters/enemies.
+  const playerEntities = characters.filter((c) => c.playerControlled);
+  characters.length = 0;
+  characters.push(...playerEntities);
+  enemies.length = 0;
+
+  const enemy = {
+    selected: false, isMoving: false, playerControlled: false,
+    facingAngle: Math.PI / 2,
+    name: "Mannequin d'entraînement",
+    label: 'M',
+    color: '#6d4c41',
+    size: 42, // 56 * 75% (demande utilisateur explicite : tailles réduites à 75%)
+    hpMax: TRAINING_DUMMY_HP,
+    hp: TRAINING_DUMMY_HP,
+    combatOverride: { melee: true, stat: 'force' },
+    stats: { force: 0 },
+    trainingDummy: true,
+    bombAttack: null,
+    stationary: false,
+    flyingBombAttack: false,
+  };
+  resetTransientCombatState(enemy);
+  // Plus bas que l'ennemi habituel (voir resetCombatEncounter) : au niveau du premier tiers de
+  // la zone de jeu visible, sous le bandeau du haut (demande utilisateur explicite).
+  const dummyY = TOP_BANNER_HEIGHT + (canvas.height - TOP_BANNER_HEIGHT) / 3;
+  const spawn = clampPointToField({ size: enemy.size }, cx, dummyY);
+  enemy.x = spawn.x;
+  enemy.y = spawn.y;
+  characters.push(enemy);
+  enemies.push(enemy);
+
   activeBombs = [];
   flyingBombs = [];
 
@@ -4943,17 +5006,17 @@ function grantXp(entity, amount) {
   }
 }
 
-// Détecte la fin du combat affiché -- victoire (boss à 0 PV) ou défaite (plus aucun personnage
-// vivant) -- et bascule combatPhase sur l'écran de fin correspondant (voir drawCombatEndScreen).
-// Débloque aussi le rond suivant et distribue l'XP de victoire (personnages ET joueurs, demande
-// utilisateur explicite). Appelé à chaque image (voir loop()), mais combatOutcomeHandled évite de
-// redéclencher tout ça en boucle tant qu'on n'a pas relancé un nouveau combat (voir enterCombatLevel).
+// Détecte la fin du combat affiché -- victoire (TOUS les ennemis à 0 PV, voir resetCombatEncounter
+// pour le rond 4 du Tutoriel à 3 ennemis) ou défaite (plus aucun personnage vivant) -- et bascule
+// combatPhase sur l'écran de fin correspondant (voir drawCombatEndScreen). Débloque aussi le rond
+// suivant et distribue l'XP de victoire (personnages ET joueurs, demande utilisateur explicite).
+// Appelé à chaque image (voir loop()), mais combatOutcomeHandled évite de redéclencher tout ça en
+// boucle tant qu'on n'a pas relancé un nouveau combat (voir enterCombatLevel).
 function checkCombatOutcome() {
   if (currentScene !== 'combat' || combatOutcomeHandled || isTrainingCombat) return;
-  const boss = enemies[0];
-  if (!boss) return;
+  if (enemies.length === 0) return;
 
-  if (boss.hp <= 0) {
+  if (enemies.every((e) => e.hp <= 0)) {
     combatOutcomeHandled = true;
     combatPhase = 'victory';
     const dungeon = DUNGEONS[selectedDungeon];
