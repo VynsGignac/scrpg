@@ -1263,7 +1263,15 @@ function updateAutoPlay(character) {
   // autre décision d'auto-play (approcher/attaquer/lancer un sort) ne prend le pas dessus.
   if (updateDangerAvoidance(character, now)) return;
 
-  const target = nearestEnemyTo(character);
+  // Respecte une cible déjà choisie manuellement, même la bombe volante de l'Artificier (jamais
+  // renvoyée par nearestEnemyTo, qui ne connaît que l'ennemi "normal", voir plus bas) -- tant
+  // qu'elle reste valide (vivante, pas déjà explosée/détruite). Sans ça, un personnage repassait
+  // non sélectionné (l'utilisateur en sélectionne/désélectionne plusieurs à la suite) se faisait
+  // reforcer sur l'ennemi normal DÈS l'image suivante, donnant l'impression que l'ordre de cibler
+  // la bombe était "ignoré" après coup (demande utilisateur explicite).
+  const currentTarget = character.attackTarget;
+  const currentTargetValid = currentTarget && currentTarget.hp > 0 && !currentTarget.explodedAt && !currentTarget.destroyedAt;
+  const target = currentTargetValid ? currentTarget : nearestEnemyTo(character);
   if (!target) return;
 
   // Nouvel engagement, ou cible déjà fixée mais hors de portée après être arrivé (elle a bougé
