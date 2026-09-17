@@ -6,4 +6,4 @@
 // explicite de l'utilisateur.
 // ============================================================
 
-const GameVersion = '0.1.187';
+const GameVersion = '0.1.189';

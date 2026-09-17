@@ -1086,16 +1086,25 @@ function updateFlyingBombs(dt, now) {
   });
 }
 
+// Marge de bascule (demande utilisateur explicite : le système d'aggro "part vite en bazar" sans
+// elle) -- un ennemi ne lâche sa cible actuelle pour un autre prétendant que si la menace de ce
+// dernier dépasse la sienne de cette proportion (comme le seuil ~110% des MMO classiques), pas au
+// premier point d'écart. Sans ça, deux personnages à menace proche se dépassaient sans cesse au
+// fil de la décroissance continue (voir effectiveThreat), et la cible changeait quasiment à
+// chaque image -- un vrai tank ne "tenait" donc jamais l'aggro de façon lisible.
+const THREAT_LEAD_MARGIN = 1.2;
+
 // IA d'un ennemi (voir ENCOUNTERS) : attaque le personnage qui a le plus de menace vis-à-vis de
-// lui (voir highestThreatPlayer) -- peut donc changer de cible en cours de combat si quelqu'un
-// d'autre prend l'aggro. Une provocation active (Fierté du juste) prend le pas sur la menace tant
-// qu'elle dure. Tant que personne n'a encore généré de menace (tout juste engagé), une cible
-// aléatoire de repli est choisie UNE FOIS et gardée telle quelle (sinon, en tirant au sort à
-// chaque image tant que tout le monde est à 0, il changerait d'avis en permanence sans jamais se
-// décider à approcher qui que ce soit). S'approche pour attaquer (corps à corps ou à distance
-// selon l'ennemi, voir approachForCombat) tant qu'il n'est pas à portée -- comme la cible peut
-// elle-même se déplacer entre-temps, il recalcule sa route à chaque fois qu'il arrive quelque
-// part sans être à portée.
+// lui (voir highestThreatPlayer), avec une marge de bascule (THREAT_LEAD_MARGIN ci-dessus) pour
+// ne pas changer de cible au moindre dépassement -- peut donc quand même changer de cible en cours
+// de combat si quelqu'un d'autre prend franchement l'aggro. Une provocation active (Fierté du
+// juste) prend le pas sur la menace tant qu'elle dure. Tant que personne n'a encore généré de
+// menace (tout juste engagé), une cible aléatoire de repli est choisie UNE FOIS et gardée telle
+// quelle (sinon, en tirant au sort à chaque image tant que tout le monde est à 0, il changerait
+// d'avis en permanence sans jamais se décider à approcher qui que ce soit). S'approche pour
+// attaquer (corps à corps ou à distance selon l'ennemi, voir approachForCombat) tant qu'il n'est
+// pas à portée -- comme la cible peut elle-même se déplacer entre-temps, il recalcule sa route à
+// chaque fois qu'il arrive quelque part sans être à portée.
 function updateEnemyAI(enemy, now) {
   if (enemy.hp <= 0 || combatPhase !== 'active') return;
   if (enemy.trainingDummy) return; // mannequin d'entraînement : n'attaque ni ne se déplace jamais
@@ -1107,9 +1116,15 @@ function updateEnemyAI(enemy, now) {
     enemy.attackTarget = enemy.tauntedBy;
   } else {
     const { best, bestThreat } = highestThreatPlayer(now);
+    const currentTarget = enemy.attackTarget;
+    const currentValid = currentTarget && currentTarget.playerControlled && currentTarget.hp > 0;
     if (best && bestThreat > 0) {
-      enemy.attackTarget = best;
-    } else if (!enemy.attackTarget || enemy.attackTarget.hp <= 0) {
+      if (!currentValid || best === currentTarget) {
+        enemy.attackTarget = best;
+      } else if (bestThreat > effectiveThreat(currentTarget, now) * THREAT_LEAD_MARGIN) {
+        enemy.attackTarget = best; // dépassement franc (voir THREAT_LEAD_MARGIN) : vrai changement d'aggro
+      } // sinon : lead insuffisant, garde la cible actuelle plutôt que de la lâcher pour rien
+    } else if (!currentValid) {
       enemy.attackTarget = alivePlayers[Math.floor(Math.random() * alivePlayers.length)];
     }
   }
