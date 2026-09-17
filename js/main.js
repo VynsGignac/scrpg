@@ -555,6 +555,16 @@ const DEFAULT_COMBAT = { melee: true, stat: 'force' };
 const RANGED_ATTACK_RANGE = 220;
 const ATTACK_INTERVAL_MS = 2000;
 
+// Soigneurs purs (demande utilisateur explicite) : ne peuvent plus cibler un ennemi ni infliger de
+// dégâts avec leur attaque de base -- celle-ci soigne l'allié ciblé à la place, du même montant
+// qu'elle aurait infligé en dégâts (voir updateCombat/orderAttack/hitTestCharacter à la place de
+// hitTestEnemyAt). Ne touche pas à leurs sorts actifs (ex. Morsure venimeuse, Mot de douleur, qui
+// gardent leur propre "targeting: 'enemy'" défini individuellement).
+const HEALER_ONLY_CLASSES = new Set(['Druide', 'Prêtre']);
+function isHealerOnly(character) {
+  return HEALER_ONLY_CLASSES.has(character.className);
+}
+
 // ------------------------------------------------------------
 // Hâte (nouvelle caractéristique, demande utilisateur explicite) : accélère l'attaque de base et
 // réduit les cooldowns de compétence. Tout le monde commence à 0 (voir statsForClass) -- seuls les
@@ -1354,7 +1364,9 @@ function updateAutoPlay(character) {
   // la bombe était "ignoré" après coup (demande utilisateur explicite).
   const currentTarget = character.attackTarget;
   const currentTargetValid = currentTarget && currentTarget.hp > 0 && !currentTarget.explodedAt && !currentTarget.destroyedAt;
-  const target = currentTargetValid ? currentTarget : nearestEnemyTo(character);
+  // Soigneur pur (Druide/Prêtre, voir isHealerOnly) : cherche un allié à soigner plutôt qu'un
+  // ennemi à attaquer.
+  const target = currentTargetValid ? currentTarget : (isHealerOnly(character) ? lowestHpAlly() : nearestEnemyTo(character));
   if (!target) return;
 
   // Nouvel engagement, ou cible déjà fixée mais hors de portée après être arrivé (elle a bougé
@@ -1390,6 +1402,11 @@ function updateAutoPlay(character) {
 function updateCombat(character, now) {
   if (character.hp <= 0) return; // mort : ne peut plus attaquer
 
+  // Soigneur pur (Druide/Prêtre, voir isHealerOnly) : cherche un allié à soigner au lieu d'un
+  // ennemi à attaquer, pour l'acquisition automatique de cible ci-dessous comme pour la
+  // résolution de l'attaque tout en bas.
+  const healerOnly = character.playerControlled && isHealerOnly(character);
+
   // Riposte passive, sans déplacement : un personnage du joueur sans cible qui a déjà un ennemi
   // à portée l'attaque sans qu'un ordre explicite soit nécessaire -- qu'il soit sélectionné ou
   // non (la poursuite ACTIVE, avec déplacement, reste elle réservée aux non-sélectionnés, voir
@@ -1398,7 +1415,7 @@ function updateCombat(character, now) {
   // 'active' : avant le pull et pendant le compte à rebours, seule une attaque manuelle du
   // joueur (voir orderAttack/castSkill) peut faire agir un personnage.
   if (character.playerControlled && !character.attackTarget && combatPhase === 'active') {
-    const candidate = nearestEnemyTo(character);
+    const candidate = healerOnly ? lowestHpAlly() : nearestEnemyTo(character);
     if (candidate && isInRangeOf(character, candidate)) character.attackTarget = candidate;
   }
 
@@ -1430,9 +1447,15 @@ function updateCombat(character, now) {
 
   character.lastAttackAt = now;
   const combat = combatProfile(character);
-  // Attaque de base = 100% de la stat (Force, ou Intelligence pour les lanceurs de sorts).
+  // Attaque de base = 100% de la stat (Force, ou Intelligence pour les lanceurs de sorts). Pour
+  // un soigneur pur (demande utilisateur explicite), ce même montant soigne la cible (un allié,
+  // voir plus haut) au lieu de lui infliger des dégâts.
   const { amount, crit } = computeStatDamage(character, combat.stat, 1);
-  dealDamage(target, amount, '255, 112, 67', character, crit);
+  if (healerOnly) {
+    healCharacter(target, amount, character); // pas de skillLabel -- retombe sur "Soin de base" (voir recordHealStat), comme dealDamage sur "Attaque de base"
+  } else {
+    dealDamage(target, amount, '255, 112, 67', character, crit);
+  }
 }
 
 // Texte flottant montrant les dégâts/soins (voir dealDamage, healCharacter, updateDotEffects) :
@@ -2703,8 +2726,11 @@ function castSkill(character, skillId) {
     // permet de viser la bombe volante de l'Artificier gobelin avec un sort, pas seulement
     // l'ennemi principal (demande utilisateur explicite). Repli sur l'ennemi vivant le plus proche
     // si rien n'a encore été ciblé manuellement (plusieurs ennemis possibles, voir
-    // TUTORIAL_ENCOUNTERS rond 4 -- enemies[0] pourrait être un ennemi déjà mort).
-    const target = character.attackTarget || nearestEnemyTo(character);
+    // TUTORIAL_ENCOUNTERS rond 4 -- enemies[0] pourrait être un ennemi déjà mort), OU si la cible
+    // actuelle est un allié (soigneur pur, voir isHealerOnly -- son attackTarget vise
+    // normalement un allié, jamais valable pour un sort qui vise un ennemi).
+    const attackTargetIsEnemy = character.attackTarget && !character.attackTarget.playerControlled;
+    const target = attackTargetIsEnemy ? character.attackTarget : nearestEnemyTo(character);
     if (!target || target.hp <= 0 || !isInRangeOf(character, target)) return false;
     skill.cast(character, target);
   } else {
@@ -2947,6 +2973,7 @@ let pointerDownX = 0, pointerDownY = 0;
 let dragging = false;
 let dragPreviewPath = [];
 let dragTargetEnemy = null; // ennemi survolé pendant le drag -- voir pointermove
+let dragTargetAlly = null; // allié survolé pendant le drag d'un soigneur pur -- voir pointermove/isHealerOnly
 let pressedEnemy = null; // ennemi sous le doigt au pointerdown (hors personnage), voir pointerup
 let threatPanelEnemy = null; // ennemi dont on affiche l'ordre de menace (clic dessus), voir drawThreatPanel
 
@@ -3061,6 +3088,7 @@ function clearPointerState() {
   dragging = false;
   dragPreviewPath = [];
   dragTargetEnemy = null;
+  dragTargetAlly = null;
   clearLongPress();
   hoveredSkillsCharacter = null;
   pendingHit = null;
@@ -3139,6 +3167,7 @@ canvas.addEventListener('pointerdown', (event) => {
   dragging = false;
   dragPreviewPath = [];
   dragTargetEnemy = null;
+  dragTargetAlly = null;
   canvas.setPointerCapture(pointerId);
 });
 
@@ -3170,8 +3199,17 @@ canvas.addEventListener('pointermove', (event) => {
   // déplacement habituel -- sans ça, resolveDestination repousse toujours l'aperçu en dehors de
   // l'ennemi, donnant l'impression à tort qu'on ne peut pas viser dessus. Avant le pull, aucune
   // attaque n'est possible : jamais de mise en avant de cible, juste l'aperçu de déplacement.
-  dragTargetEnemy = combatPhase === 'prePull' ? null : hitTestEnemyAt(x, y);
-  if (dragTargetEnemy) {
+  // Druide/Prêtre (voir isHealerOnly) ne ciblent plus d'ennemis : c'est un allié survolé qui
+  // indique leur cible de soin à la place.
+  if (isHealerOnly(activeTarget)) {
+    dragTargetEnemy = null;
+    dragTargetAlly = combatPhase === 'prePull' ? null : hitTestCharacter(x, y);
+    if (dragTargetAlly === activeTarget) dragTargetAlly = null;
+  } else {
+    dragTargetAlly = null;
+    dragTargetEnemy = combatPhase === 'prePull' ? null : hitTestEnemyAt(x, y);
+  }
+  if (dragTargetEnemy || dragTargetAlly) {
     dragPreviewPath = [];
     return;
   }
@@ -3239,13 +3277,24 @@ canvas.addEventListener('pointerup', (event) => {
       activeTarget.selected = true;
 
       // Terminer le drag SUR un ennemi = ordre d'attaque plutôt qu'un simple déplacement --
-      // sauf avant le pull, où aucune attaque n'est permise (voir combatPhase).
-      const targetEnemy = combatPhase === 'prePull' ? null : hitTestEnemyAt(x, y);
-      if (targetEnemy) {
-        orderAttack(activeTarget, targetEnemy);
+      // sauf avant le pull, où aucune attaque n'est permise (voir combatPhase). Druide/Prêtre
+      // (isHealerOnly) ne ciblent plus d'ennemis : terminer sur un allié est un ordre de soin.
+      if (isHealerOnly(activeTarget)) {
+        const targetAlly = combatPhase === 'prePull' ? null : hitTestCharacter(x, y);
+        if (targetAlly && targetAlly !== activeTarget) {
+          orderAttack(activeTarget, targetAlly);
+        } else {
+          activeTarget.attackTarget = null;
+          startMove(activeTarget, x, y);
+        }
       } else {
-        activeTarget.attackTarget = null; // un nouvel ordre de déplacement annule un combat en cours
-        startMove(activeTarget, x, y);
+        const targetEnemy = combatPhase === 'prePull' ? null : hitTestEnemyAt(x, y);
+        if (targetEnemy) {
+          orderAttack(activeTarget, targetEnemy);
+        } else {
+          activeTarget.attackTarget = null; // un nouvel ordre de déplacement annule un combat en cours
+          startMove(activeTarget, x, y);
+        }
       }
     }
   } else if (pressedEnemy && dist <= CLICK_THRESHOLD) {
@@ -5632,6 +5681,20 @@ function draw() {
       ctx.beginPath();
       ctx.moveTo(activeTarget.x, activeTarget.y);
       ctx.lineTo(dragTargetEnemy.x, dragTargetEnemy.y);
+      ctx.stroke();
+    } else if (dragging && activeTarget && dragTargetAlly) {
+      // Même principe que dragTargetEnemy ci-dessus, mais en vert (soin) pour un allié survolé
+      // par un soigneur pur (Druide/Prêtre, voir isHealerOnly).
+      const half = dragTargetAlly.size / 2;
+      ctx.strokeStyle = '#66bb6a';
+      ctx.lineWidth = 4;
+      ctx.strokeRect(dragTargetAlly.x - half - 8, dragTargetAlly.y - half - 8, dragTargetAlly.size + 16, dragTargetAlly.size + 16);
+
+      ctx.strokeStyle = '#66bb6aaa';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(activeTarget.x, activeTarget.y);
+      ctx.lineTo(dragTargetAlly.x, dragTargetAlly.y);
       ctx.stroke();
     } else if (dragging && activeTarget && dragPreviewPath.length > 0) {
       ctx.strokeStyle = '#ffd54f';
