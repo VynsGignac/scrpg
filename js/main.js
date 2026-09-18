@@ -1435,7 +1435,13 @@ function updateAutoPlay(character) {
   const recentlyHit = now - (character.lastDamageTakenAt || 0) <= AUTO_DEFENSIVE_WINDOW_MS;
   for (const skillId of CLASS_SKILLS[character.className] || []) {
     if (AUTO_DEFENSIVE_SKILLS.has(skillId) && !recentlyHit) continue;
-    if (castSkill(character, skillId)) {
+    const skill = SKILLS[skillId];
+    // Sort "au sol" (voir groundTargetSkill/targeting 'ground') : pas de visée manuelle possible
+    // pour un personnage non sélectionné -- vise directement un allié (demande utilisateur
+    // explicite : "sa zone cible est toujours un joueur allié"), le même que choisirait un soin
+    // normal (lowestHpAlly a x/y, donc utilisable tel quel comme point au sol).
+    const groundPoint = skill && skill.targeting === 'ground' ? lowestHpAlly() : null;
+    if (castSkill(character, skillId, groundPoint)) {
       character.lastAutoSkillAt = now;
       break; // un seul sort par image, pour laisser le délai d'1s s'écouler avant le suivant
     }
