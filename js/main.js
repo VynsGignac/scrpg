@@ -700,13 +700,28 @@ function prePullMinY() {
   return TOP_BANNER_HEIGHT + (canvas.height - TOP_BANNER_HEIGHT) / 3;
 }
 
-// Position verticale par défaut d'un ennemi au début d'un combat (demande utilisateur explicite,
-// avant trop proche du bouton PULL) : aux 3/4 du tiers réservé aux ennemis, donc confortablement
-// au-dessus de la ligne pointillée (prePullMinY) sans coller au bandeau du haut ni au bouton PULL.
-// Utilisée aussi bien pour un vrai combat (resetCombatEncounter) que pour le mannequin
-// d'entraînement (enterTrainingCombat), pour rester cohérent entre les deux.
-function defaultEnemySpawnY() {
-  return TOP_BANNER_HEIGHT + (prePullMinY() - TOP_BANNER_HEIGHT) * 0.75;
+// Ennemis qui descendent du haut de l'écran (demande utilisateur explicite) : posés hors champ
+// juste au-dessus du bandeau (voir resetCombatEncounter), ils ne bougent pas tant que le pull n'a
+// pas été lancé -- startEnemyDescent est appelée une fois par ennemi dès que combatPhase passe à
+// 'active' (voir loop()), qui lance un déplacement (startMove, comme n'importe quel autre) vers le
+// milieu de l'écran avec une dérive latérale aléatoire ("angle aléatoire", demande utilisateur
+// explicite). enemy.descending reste true tant que ce trajet n'est pas terminé -- updateEnemyAI
+// (voir plus loin) n'attaque/ne cible personne tant qu'il est vrai, donc la seule façon d'attirer
+// l'ennemi AVANT qu'il choisisse une cible au hasard en arrivant est de générer de la menace en
+// l'attaquant pendant sa descente (déjà possible : hitTestEnemyAt/orderAttack ne dépendent pas de
+// enemy.descending).
+const ENEMY_DESCEND_ANGLE_MAX_RAD = Math.PI / 6; // ±30° par rapport à la verticale
+
+function enemyDescendTargetY() {
+  return (TOP_BANNER_HEIGHT + canvas.height) / 2;
+}
+
+function startEnemyDescent(enemy) {
+  const destY = enemyDescendTargetY();
+  const angle = (Math.random() * 2 - 1) * ENEMY_DESCEND_ANGLE_MAX_RAD;
+  const destX = enemy.x + Math.tan(angle) * (destY - enemy.y);
+  const dest = clampPointToField(enemy, destX, destY);
+  startMove(enemy, dest.x, dest.y);
 }
 
 function startPullCountdown() {
@@ -1189,6 +1204,14 @@ const THREAT_LEAD_MARGIN = 1.2;
 function updateEnemyAI(enemy, now) {
   if (enemy.hp <= 0 || combatPhase !== 'active') return;
   if (enemy.trainingDummy) return; // mannequin d'entraînement : n'attaque ni ne se déplace jamais
+
+  // Descente depuis le haut de l'écran (voir startEnemyDescent) : ni ciblage ni attaque tant que
+  // le trajet n'est pas terminé -- seule une menace générée manuellement (en l'attaquant pendant
+  // sa descente) peut l'attirer avant qu'il choisisse une cible au hasard en arrivant.
+  if (enemy.descending) {
+    if (enemy.isMoving) return;
+    enemy.descending = false;
+  }
 
   const alivePlayers = characters.filter((c) => c.playerControlled && c.hp > 0);
   if (alivePlayers.length === 0) return;
@@ -5401,7 +5424,11 @@ function resetCombatEncounter(levelIndex) {
     const configs = level.enemies;
     configs.forEach((config, i) => {
       const spawnX = squareXFor(i, configs.length);
-      const spawn = clampPointToField({ size: config.size }, spawnX, defaultEnemySpawnY());
+      // Hors champ, juste au-dessus du bandeau (caché derrière, lui opaque) -- descend dans le
+      // champ de vision seulement une fois le pull lancé (voir startEnemyDescent, appelée quand
+      // combatPhase passe à 'active'), pas avant (demande utilisateur explicite : ennemis qui
+      // "descendent du haut de l'écran").
+      const spawnPoint = clampPointToField({ size: config.size }, spawnX, TOP_BANNER_HEIGHT);
       const enemy = {
         selected: false, isMoving: false, playerControlled: false,
         facingAngle: Math.PI / 2,
@@ -5413,9 +5440,10 @@ function resetCombatEncounter(levelIndex) {
         bombAttack: config.bombAttack || null,
         stationary: !!config.stationary,
         flyingBombAttack: !!config.flyingBombAttack,
-        x: spawn.x, y: spawn.y,
+        x: spawnPoint.x, y: TOP_BANNER_HEIGHT - config.size,
       };
       resetTransientCombatState(enemy);
+      enemy.descending = true;
       characters.push(enemy);
       enemies.push(enemy);
     });
@@ -6247,6 +6275,11 @@ function loop(now) {
     if (combatPhase === 'countdown' && now >= pullCountdownEndAt) {
       combatPhase = 'active';
       combatActiveStartAt = now;
+      // Lance la descente de chaque ennemi (voir resetCombatEncounter/startEnemyDescent) pile au
+      // moment où le combat démarre vraiment, pas avant.
+      for (const enemy of enemies) {
+        if (enemy.descending) startEnemyDescent(enemy);
+      }
     }
 
     for (const enemy of enemies) updateEnemyAI(enemy, now);
