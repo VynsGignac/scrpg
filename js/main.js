@@ -1879,6 +1879,61 @@ function healCharacter(target, amount, source, skillLabel) {
   }
 }
 
+// ------------------------------------------------------------------
+// Graines du Druide (demande utilisateur explicite, voir SKILLS.planterGraine) : posées au sol au
+// point choisi par le joueur (voir groundTargetSkill, mécanisme de visée générique) plutôt que
+// centrées sur un personnage -- persistent à un endroit fixe et soignent tout allié qui reste à
+// proximité, toutes les SEED_TICK_INTERVAL_MS, jusqu'à se faner après SEED_DURATION_MS.
+// ------------------------------------------------------------------
+const groundSeeds = [];
+const SEED_RADIUS = 120;
+const SEED_TICK_INTERVAL_MS = 2000;
+const SEED_DURATION_MS = 12000;
+
+function spawnSeed(source, x, y) {
+  const now = performance.now();
+  groundSeeds.push({ source, x, y, plantedAt: now, nextTickAt: now + SEED_TICK_INTERVAL_MS });
+}
+
+function updateSeeds(now) {
+  for (let i = groundSeeds.length - 1; i >= 0; i--) {
+    const seed = groundSeeds[i];
+    if (now - seed.plantedAt >= SEED_DURATION_MS) {
+      groundSeeds.splice(i, 1);
+      continue;
+    }
+    if (now < seed.nextTickAt) continue;
+    seed.nextTickAt = now + SEED_TICK_INTERVAL_MS;
+    // Hybride Savoir + Intelligence (même dosage ~70/30 que le reste du kit soin du Druide, voir
+    // Carapace d'écorce/Chant de la forêt) -- calculé sur les stats du Druide qui l'a plantée, pas
+    // sur qui en profite.
+    const heal = Math.round(seed.source.stats.savoir * 0.25 + seed.source.stats.intelligence * 0.1);
+    for (const c of characters) {
+      if (!c.playerControlled || c.hp <= 0) continue;
+      if (Math.hypot(c.x - seed.x, c.y - seed.y) > SEED_RADIUS) continue;
+      healCharacter(c, heal, seed.source, 'Graine');
+    }
+  }
+}
+
+function drawSeeds(now) {
+  for (const seed of groundSeeds) {
+    const lifeFrac = Math.max(0, 1 - (now - seed.plantedAt) / SEED_DURATION_MS);
+    ctx.beginPath();
+    ctx.arc(seed.x, seed.y, SEED_RADIUS, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(102, 187, 106, ${(0.05 + 0.08 * lifeFrac).toFixed(2)})`;
+    ctx.fill();
+    ctx.strokeStyle = `rgba(102, 187, 106, ${(0.25 + 0.45 * lifeFrac).toFixed(2)})`;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // La graine elle-même : un petit point vif au centre de la zone.
+    ctx.beginPath();
+    ctx.arc(seed.x, seed.y, 6, 0, Math.PI * 2);
+    ctx.fillStyle = '#66bb6a';
+    ctx.fill();
+  }
+}
+
 // Effet à tick (brûlure/saignement) : inflige damagePerTick toutes les tickIntervalMs, ticksLeft
 // fois. Garde une référence à qui l'a posé (spec.source) pour continuer à générer de la menace en
 // son nom à chaque tick, même si le lanceur bouge ou fait autre chose entre-temps.
@@ -2465,6 +2520,19 @@ const SKILLS = {
       }
     },
   },
+  // "ground" (demande utilisateur explicite : premier essai du mécanisme de visée au sol, voir
+  // groundTargetSkill) : le joueur tape la case, vise un point du champ de bataille (aperçu du
+  // rayon en direct, voir draw()), puis confirme au relâchement -- cast(character, point) reçoit
+  // ce point plutôt qu'un personnage/une cible. groundRadius sert à la fois à la prévisualisation
+  // et à l'effet réel (voir SEED_RADIUS/spawnSeed).
+  planterGraine: {
+    id: 'planterGraine', name: 'Planter une graine', shortLabel: 'Planter\nune graine', targeting: 'ground', cooldownMs: 8000,
+    groundRadius: SEED_RADIUS,
+    description: "Plante une graine au sol : soigne les alliés proches toutes les 2s pendant 12s.",
+    cast(character, point) {
+      spawnSeed(character, point.x, point.y);
+    },
+  },
 
   // ============================== PRÊTRE (Intelligence/Savoir, distance) ==============================
   // Gros soin mono-cible du jeu (demande utilisateur explicite) : Soin majeur pose un stack de
@@ -2806,7 +2874,7 @@ const CLASS_SKILLS = {
   Mage: ['eclatDeGlace', 'novaDeGivre', 'voileDeGivre', 'gel'],
   Pyromane: ['bouleDeFeu', 'pluieDeFeu', 'bouclierDeFlammes', 'explosion'],
   Chasseur: ['tirPercant', 'tirEnRafale', 'repliTactique', 'piegeAOurs'],
-  Druide: ['morsureVenimeuse', 'epinesEmpoisonnees', 'carapaceDEcorce', 'chantDeLaForet'],
+  Druide: ['morsureVenimeuse', 'epinesEmpoisonnees', 'carapaceDEcorce', 'chantDeLaForet', 'planterGraine'],
   'Prêtre': ['motDeDouleur', 'cercleSacre', 'voileProtecteur', 'soinMajeur'],
   Sorcier: ['drainDeVie', 'epidemie', 'pacteDeProtection', 'malediction'],
   Chaman: ['frappeDesEsprits', 'chaineDEclairs', 'boucliersDesAncetres', 'totem'],
@@ -2839,9 +2907,20 @@ function updateManaRegen(character, dt) {
   character.mana = Math.min(character.manaMax, character.mana + (perSecond * dt) / 1000);
 }
 
+// ------------------------------------------------------------------
+// Visée "au sol" (demande utilisateur explicite : "trouver le mécanisme sur téléphone pour lancer
+// un sort dans une zone") -- pour l'instant un seul sort l'utilise (Planter une graine, voir
+// SKILLS.planterGraine/CLASS_SKILLS.Druide). Toucher la case du sort n'appelle plus castSkill tout
+// de suite : ça entre dans ce mode, qui intercepte tout le champ de bataille (comme strategyMode
+// ci-dessus) jusqu'au prochain relâchement, qui confirme l'emplacement (voir pointerup) -- retoucher
+// la même case pendant la visée l'annule à la place (voir drawSkillSlot).
+// ------------------------------------------------------------------
+let groundTargetSkill = null; // { character, skillId } en attente d'un point au sol, ou null
+let groundTargetPreview = null; // { x, y } dernier point survolé/touché pendant la visée
+
 // Renvoie true si le sort a réellement été lancé (utilisé par updateAutoPlay pour respecter le
 // délai d'1s entre deux compétences de l'IA -- voir AUTO_ABILITY_INTERVAL_MS).
-function castSkill(character, skillId) {
+function castSkill(character, skillId, groundPoint) {
   if (character.hp <= 0 || combatPhase === 'prePull') return false; // mort, ou pull pas encore lancé
   const skill = SKILLS[skillId];
   if (!skill) return false;
@@ -2863,6 +2942,9 @@ function castSkill(character, skillId) {
     const target = attackTargetIsEnemy ? character.attackTarget : nearestEnemyTo(character);
     if (!target || target.hp <= 0 || !isInRangeOf(character, target)) return false;
     skill.cast(character, target);
+  } else if (skill.targeting === 'ground') {
+    if (!groundPoint) return false; // appelé sans point au sol (ex. auto-play) : pas castable ainsi
+    skill.cast(character, groundPoint);
   } else {
     skill.cast(character);
   }
@@ -3224,6 +3306,8 @@ function clearPointerState() {
   pendingHit = null;
   scrollDragActive = false;
   strategyPainting = false;
+  groundTargetSkill = null;
+  groundTargetPreview = null;
 }
 
 canvas.addEventListener('pointerdown', (event) => {
@@ -3287,6 +3371,14 @@ canvas.addEventListener('pointerdown', (event) => {
     return;
   }
 
+  // Visée d'un sort au sol (voir groundTargetSkill) : intercepte aussi tout le champ de bataille,
+  // comme le mode Stratégie ci-dessus -- un tap confirme l'emplacement au relâchement (voir
+  // pointerup), pas de sélection/déplacement de personnage entre-temps.
+  if (groundTargetSkill) {
+    groundTargetPreview = { x, y };
+    return;
+  }
+
   pointerId = event.pointerId;
   pointerActive = true;
   activeTarget = hitTestCharacter(x, y);
@@ -3299,6 +3391,14 @@ canvas.addEventListener('pointerdown', (event) => {
   dragTargetEnemy = null;
   dragTargetAlly = null;
   canvas.setPointerCapture(pointerId);
+});
+
+// Prévisualisation de la visée au sol (voir groundTargetSkill) : suit le pointeur pendant qu'on
+// vise, aussi bien un doigt qui glisse avant de relâcher (voir pointerdown ci-dessus, qui a déjà
+// posé le premier point) qu'un simple survol souris sans appui -- confirmé au final par pointerup.
+canvas.addEventListener('pointermove', (event) => {
+  if (!groundTargetSkill) return;
+  groundTargetPreview = getPointerPos(event);
 });
 
 // Défilement (voir SCROLLABLE_SCENES) + annulation du tap/appui long en attente dès que le geste
@@ -3387,6 +3487,18 @@ canvas.addEventListener('pointerup', (event) => {
 
   if (strategyMode) {
     handleStrategyPointerUp();
+    return;
+  }
+
+  // Confirme la visée au sol en cours (voir groundTargetSkill/pointerdown) à l'endroit du
+  // relâchement -- pas de seuil de distance comme ailleurs : glisser pour ajuster la position
+  // avant de lâcher est justement le geste voulu (voir groundTargetPreview).
+  if (groundTargetSkill) {
+    const point = getPointerPos(event);
+    const { character, skillId } = groundTargetSkill;
+    groundTargetSkill = null;
+    groundTargetPreview = null;
+    if (combatPhase === 'active') castSkill(character, skillId, point);
     return;
   }
 
@@ -4291,11 +4403,26 @@ function drawSkillSlot(character, skill, slotX, slotY, slotSize, now) {
   }
   ctx.restore();
 
-  ctx.strokeStyle = '#ffffff55';
-  ctx.lineWidth = 1;
+  // En cours de visée (voir groundTargetSkill) : liseré vert plutôt que le contour standard, pour
+  // que le joueur voie clairement quelle case attend un point au sol.
+  const aiming = groundTargetSkill && groundTargetSkill.character === character && groundTargetSkill.skillId === skill.id;
+  ctx.strokeStyle = aiming ? '#66bb6a' : '#ffffff55';
+  ctx.lineWidth = aiming ? 3 : 1;
   ctx.strokeRect(slotX + 0.5, slotY + 0.5, slotSize - 1, slotSize - 1);
 
-  if (!locked) registerHitRect(slotX, slotY, slotSize, slotSize, () => castSkill(character, skill.id));
+  if (!locked) {
+    registerHitRect(slotX, slotY, slotSize, slotSize, () => {
+      if (skill.targeting === 'ground') {
+        // Retoucher la case pendant qu'on vise déjà CE sort annule la visée ; sinon on y entre
+        // (voir le bloc de commentaire au-dessus de groundTargetSkill).
+        groundTargetSkill = aiming ? null : { character, skillId: skill.id };
+        groundTargetPreview = null;
+      } else {
+        groundTargetSkill = null; // un sort normal en cours de visée d'un autre annule cette visée
+        castSkill(character, skill.id);
+      }
+    });
+  }
 }
 
 // Calcule une taille de police qui fait tenir tous les libellés dans la largeur d'un bouton --
@@ -5110,6 +5237,7 @@ function resetCombatEncounter(levelIndex) {
   }
   activeBombs = [];
   flyingBombs = [];
+  groundSeeds.length = 0;
 
   resetPlayerCombatState();
 }
@@ -5123,6 +5251,8 @@ function enterCombatLevel(index) {
   threatPanelEnemy = null;
   expandedStatsCharacter = null;
   strategyMode = false;
+  groundTargetSkill = null;
+  groundTargetPreview = null;
   applyEncounterParty(DUNGEONS[selectedDungeon].encounters[index]);
   resetCombatEncounter(index);
   combatStats = createCombatStats(); // après resetCombatEncounter : a besoin des personnages déjà en place
@@ -5143,6 +5273,8 @@ function enterTrainingCombat() {
   threatPanelEnemy = null;
   expandedStatsCharacter = null;
   strategyMode = false;
+  groundTargetSkill = null;
+  groundTargetPreview = null;
   // Restaure la vraie composition si une ronde du Tutoriel l'avait mise de côté (voir
   // applyEncounterParty) : l'entraînement doit toujours porter sur le groupe réellement choisi.
   if (savedActivePartyIndices !== null) {
@@ -5187,6 +5319,7 @@ function enterTrainingCombat() {
 
   activeBombs = [];
   flyingBombs = [];
+  groundSeeds.length = 0;
 
   resetPlayerCombatState();
   combatStats = createCombatStats();
@@ -5774,6 +5907,7 @@ function draw() {
       if (enemy.flyingBombAttack) drawArtificierProximityZone(enemy);
     }
     for (const bomb of activeBombs) drawBomb(bomb, performance.now());
+    drawSeeds(performance.now());
     for (const character of characters) drawCharacter(character);
     for (const character of characters) {
       if (character.playerControlled) drawCharacterBars(character);
@@ -5849,6 +5983,21 @@ function draw() {
       ctx.beginPath();
       ctx.arc(finalPoint.x, finalPoint.y, 10, 0, Math.PI * 2);
       ctx.lineWidth = 5;
+      ctx.stroke();
+    }
+
+    // Visée d'un sort au sol en cours (voir groundTargetSkill/pointerdown-move-up) : cercle
+    // translucide au point actuellement visé, de même rayon que la zone d'effet réelle du sort
+    // (skill.groundRadius), pour que le joueur voie tout de suite qui sera touché avant de valider.
+    if (groundTargetSkill && groundTargetPreview) {
+      const skill = SKILLS[groundTargetSkill.skillId];
+      const radius = (skill && skill.groundRadius) || ZONE_RADIUS;
+      ctx.beginPath();
+      ctx.arc(groundTargetPreview.x, groundTargetPreview.y, radius, 0, Math.PI * 2);
+      ctx.fillStyle = '#66bb6a33';
+      ctx.fill();
+      ctx.strokeStyle = '#66bb6acc';
+      ctx.lineWidth = 2;
       ctx.stroke();
     }
 
@@ -5932,6 +6081,7 @@ function loop(now) {
     }
     updateBombs(now);
     updateFlyingBombs(dt, now);
+    updateSeeds(now);
   }
   updateFloatingTexts(now);
   updateHealEffects(now);
