@@ -1436,6 +1436,10 @@ function updateAutoPlay(character) {
   for (const skillId of CLASS_SKILLS[character.className] || []) {
     if (AUTO_DEFENSIVE_SKILLS.has(skillId) && !recentlyHit) continue;
     const skill = SKILLS[skillId];
+    // Interrupteur (Zones du Druide, voir toggleField) : un simple flip, jamais géré par l'auto-
+    // jeu -- sans condition pour décider quand l'activer/désactiver, il basculerait au hasard
+    // (parfois pour l'éteindre juste après l'avoir allumé), donc réservé au contrôle manuel.
+    if (skill && skill.toggleField) continue;
     // Sort "au sol" (voir groundTargetSkill/targeting 'ground') : pas de visée manuelle possible
     // pour un personnage non sélectionné -- vise directement un allié (demande utilisateur
     // explicite : "sa zone cible est toujours un joueur allié"), le même que choisirait un soin
@@ -1516,7 +1520,19 @@ function updateCombat(character, now) {
   // un soigneur pur (demande utilisateur explicite), ce même montant soigne la cible (un allié,
   // voir plus haut) au lieu de lui infliger des dégâts.
   const { amount, crit } = computeStatDamage(character, combat.stat, 1);
-  if (healerOnly) {
+  if (healerOnly && character.className === 'Druide') {
+    // Refonte "jardinier" (demande utilisateur explicite) : le même montant total qu'un soin
+    // direct, mais étalé en HOT (voir applyHot) -- chaque tick fait aussi germer les graines
+    // proches de la cible (voir feedNearbySeeds, appelé depuis updateHotEffects).
+    const ticks = 4;
+    applyHot(target, {
+      healPerTick: Math.max(1, Math.round(amount / ticks)),
+      tickIntervalMs: 1000,
+      ticksLeft: ticks,
+      source: character,
+      skillName: 'Attaque (soin sur la durée)',
+    });
+  } else if (healerOnly) {
     healCharacter(target, amount, character); // pas de skillLabel -- retombe sur "Soin de base" (voir recordHealStat), comme dealDamage sur "Attaque de base"
   } else {
     dealDamage(target, amount, '255, 112, 67', character, crit);
@@ -1886,55 +1902,111 @@ function healCharacter(target, amount, source, skillLabel) {
 }
 
 // ------------------------------------------------------------------
-// Graines du Druide (demande utilisateur explicite, voir SKILLS.planterGraine) : posées au sol au
-// point choisi par le joueur (voir groundTargetSkill, mécanisme de visée générique) plutôt que
-// centrées sur un personnage -- persistent à un endroit fixe et soignent tout allié qui reste à
-// proximité, toutes les SEED_TICK_INTERVAL_MS, jusqu'à se faner après SEED_DURATION_MS.
+// Graines/plantes du Druide (refonte complète, demande utilisateur explicite -- voir
+// SKILLS.planterGraine/zoneDeSoin/zoneDeDegats/zoneDeVitesse) : une graine posée au sol (voir
+// groundTargetSkill) ne fait RIEN par elle-même -- elle accumule du soin reçu à proximité (voir
+// feedNearbySeeds, appelée depuis updateHotEffects à chaque tick de l'attaque de base du Druide)
+// jusqu'à SEED_GERMINATION_THRESHOLD, où elle devient une "plante" permanente (plus de
+// péremption). Une graine qui n'a pas assez reçu se fane après SEED_WITHER_MS. Une fois germée,
+// une plante applique, toutes les PLANT_EFFECT_TICK_MS, chaque zone actuellement activée par son
+// Druide (plantHealZone/plantDamageZone/plantSpeedZone, voir les 3 sorts interrupteurs) --
+// cumulables : une plante peut soigner ET endommager ET altérer la vitesse en même temps si les
+// 3 sont actives.
 // ------------------------------------------------------------------
 const groundSeeds = [];
 const SEED_RADIUS = 120;
-const SEED_TICK_INTERVAL_MS = 2000;
-const SEED_DURATION_MS = 12000;
+const SEED_WITHER_MS = 12000; // avant germination seulement -- une plante germée ne se fane plus
+const SEED_GERMINATION_THRESHOLD = 40; // soin cumulé reçu à proximité pour éclore
+const PLANT_EFFECT_TICK_MS = 2000;
+const PLANT_HEAL_PER_TICK_SAVOIR = 0.2;
+const PLANT_HEAL_PER_TICK_INTELLIGENCE = 0.1;
+const PLANT_DAMAGE_PER_TICK_INTELLIGENCE = 0.25;
+const PLANT_SLOW_MULTIPLIER = 0.75; // ennemis ralentis
+const PLANT_HASTE_MULTIPLIER = 1.2; // alliés accélérés
+// Un peu plus long que le tick pour rester "continu" tant que la plante reste active (réutilise
+// slowMultiplier/slowUntil, voir aussi le Rythme entraînant du Barde -- générique dans les deux sens).
+const PLANT_SPEED_EFFECT_DURATION_MS = 2500;
 
 function spawnSeed(source, x, y) {
-  const now = performance.now();
-  groundSeeds.push({ source, x, y, plantedAt: now, nextTickAt: now + SEED_TICK_INTERVAL_MS });
+  groundSeeds.push({ source, x, y, plantedAt: performance.now(), growth: 0, germinated: false, nextEffectTickAt: 0 });
+}
+
+// Fait progresser vers la germination toute graine PAS ENCORE germée du même Druide dont le rayon
+// couvre (x, y) -- appelée à chaque tick de soin reçu par un allié (voir updateHotEffects), avec
+// le montant de ce soin comme progression.
+function feedNearbySeeds(source, x, y, amount) {
+  for (const seed of groundSeeds) {
+    if (seed.source !== source || seed.germinated) continue;
+    if (Math.hypot(seed.x - x, seed.y - y) > SEED_RADIUS) continue;
+    seed.growth += amount;
+    if (seed.growth >= SEED_GERMINATION_THRESHOLD) seed.germinated = true;
+  }
+}
+
+function updatePlantEffects(seed, now) {
+  if (now < seed.nextEffectTickAt) return;
+  seed.nextEffectTickAt = now + PLANT_EFFECT_TICK_MS;
+  const source = seed.source;
+
+  if (source.plantHealZone) {
+    const heal = Math.round(source.stats.savoir * PLANT_HEAL_PER_TICK_SAVOIR + source.stats.intelligence * PLANT_HEAL_PER_TICK_INTELLIGENCE);
+    for (const c of characters) {
+      if (!c.playerControlled || c.hp <= 0) continue;
+      if (Math.hypot(c.x - seed.x, c.y - seed.y) > SEED_RADIUS) continue;
+      healCharacter(c, heal, source, 'Plante (zone de soin)');
+    }
+  }
+  if (source.plantDamageZone) {
+    const dmg = Math.round(source.stats.intelligence * PLANT_DAMAGE_PER_TICK_INTELLIGENCE);
+    for (const enemy of enemies) {
+      if (enemy.hp <= 0) continue;
+      if (Math.hypot(enemy.x - seed.x, enemy.y - seed.y) > SEED_RADIUS) continue;
+      dealDamage(enemy, dmg, '102, 187, 106', source, false, 'Plante (zone de dégâts)');
+    }
+  }
+  if (source.plantSpeedZone) {
+    for (const c of characters) {
+      if (c.hp <= 0) continue;
+      if (Math.hypot(c.x - seed.x, c.y - seed.y) > SEED_RADIUS) continue;
+      c.slowMultiplier = c.playerControlled ? PLANT_HASTE_MULTIPLIER : PLANT_SLOW_MULTIPLIER;
+      c.slowUntil = now + PLANT_SPEED_EFFECT_DURATION_MS;
+    }
+  }
 }
 
 function updateSeeds(now) {
   for (let i = groundSeeds.length - 1; i >= 0; i--) {
     const seed = groundSeeds[i];
-    if (now - seed.plantedAt >= SEED_DURATION_MS) {
-      groundSeeds.splice(i, 1);
+    if (!seed.germinated) {
+      if (now - seed.plantedAt >= SEED_WITHER_MS) groundSeeds.splice(i, 1);
       continue;
     }
-    if (now < seed.nextTickAt) continue;
-    seed.nextTickAt = now + SEED_TICK_INTERVAL_MS;
-    // Hybride Savoir + Intelligence (même dosage ~70/30 que le reste du kit soin du Druide, voir
-    // Carapace d'écorce/Chant de la forêt) -- calculé sur les stats du Druide qui l'a plantée, pas
-    // sur qui en profite.
-    const heal = Math.round(seed.source.stats.savoir * 0.25 + seed.source.stats.intelligence * 0.1);
-    for (const c of characters) {
-      if (!c.playerControlled || c.hp <= 0) continue;
-      if (Math.hypot(c.x - seed.x, c.y - seed.y) > SEED_RADIUS) continue;
-      healCharacter(c, heal, seed.source, 'Graine');
-    }
+    updatePlantEffects(seed, now);
   }
 }
 
 function drawSeeds(now) {
   for (const seed of groundSeeds) {
-    const lifeFrac = Math.max(0, 1 - (now - seed.plantedAt) / SEED_DURATION_MS);
     ctx.beginPath();
     ctx.arc(seed.x, seed.y, SEED_RADIUS, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(102, 187, 106, ${(0.05 + 0.08 * lifeFrac).toFixed(2)})`;
-    ctx.fill();
-    ctx.strokeStyle = `rgba(102, 187, 106, ${(0.25 + 0.45 * lifeFrac).toFixed(2)})`;
+    if (seed.germinated) {
+      // Plante éclose : zone pleine et stable, couleur plus soutenue -- distincte d'une graine
+      // encore en germination (voir ci-dessous), pour que le joueur voie la transition d'un coup d'œil.
+      ctx.fillStyle = 'rgba(102, 187, 106, 0.14)';
+      ctx.strokeStyle = 'rgba(102, 187, 106, 0.7)';
+    } else {
+      // Graine en germination : plus discrète, et son contour se remplit avec la progression
+      // (growth/SEED_GERMINATION_THRESHOLD) pour visualiser combien de soin il manque encore.
+      const progress = Math.min(1, seed.growth / SEED_GERMINATION_THRESHOLD);
+      ctx.fillStyle = `rgba(102, 187, 106, ${(0.04 + 0.06 * progress).toFixed(2)})`;
+      ctx.strokeStyle = `rgba(102, 187, 106, ${(0.2 + 0.4 * progress).toFixed(2)})`;
+    }
     ctx.lineWidth = 2;
+    ctx.fill();
     ctx.stroke();
-    // La graine elle-même : un petit point vif au centre de la zone.
+    // La graine/plante elle-même : un point central, plus gros une fois germée.
     ctx.beginPath();
-    ctx.arc(seed.x, seed.y, 6, 0, Math.PI * 2);
+    ctx.arc(seed.x, seed.y, seed.germinated ? 9 : 6, 0, Math.PI * 2);
     ctx.fillStyle = '#66bb6a';
     ctx.fill();
   }
@@ -1963,6 +2035,28 @@ function updateDotEffects(character, now) {
       dot.nextTickAt = now + dot.tickIntervalMs;
     }
     if (dot.ticksLeft <= 0) character.dotEffects.splice(i, 1);
+  }
+}
+
+// Soin sur la durée (HOT) -- symétrique du DOT ci-dessus, pour l'attaque de base du Druide (demande
+// utilisateur explicite, voir updateCombat/healerOnly). Chaque tick soigné fait aussi germer les
+// graines du lanceur à proximité de la cible (voir feedNearbySeeds/SEED_GERMINATION_THRESHOLD).
+function applyHot(target, spec) {
+  if (!target.hotEffects) target.hotEffects = [];
+  target.hotEffects.push({ ...spec, nextTickAt: performance.now() + spec.tickIntervalMs });
+}
+
+function updateHotEffects(character, now) {
+  if (!character.hotEffects || character.hotEffects.length === 0) return;
+  for (let i = character.hotEffects.length - 1; i >= 0; i--) {
+    const hot = character.hotEffects[i];
+    if (now >= hot.nextTickAt) {
+      healCharacter(character, hot.healPerTick, hot.source, hot.skillName);
+      feedNearbySeeds(hot.source, character.x, character.y, hot.healPerTick);
+      hot.ticksLeft -= 1;
+      hot.nextTickAt = now + hot.tickIntervalMs;
+    }
+    if (hot.ticksLeft <= 0) character.hotEffects.splice(i, 1);
   }
 }
 
@@ -2472,71 +2566,45 @@ const SKILLS = {
   },
 
   // ============================== DRUIDE (Intelligence, distance) ==============================
-  morsureVenimeuse: {
-    id: 'morsureVenimeuse', name: 'Morsure venimeuse', shortLabel: 'Morsure\nvenim.', targeting: 'enemy', cooldownMs: 6000,
-    description: '60% Intelligence + poison (4 ticks).',
-    cast(character, target) {
-      const { amount, crit } = computeStatDamage(character, 'intelligence', 0.6);
-      if (dealDamage(target, amount, '124, 179, 66', character, crit, 'Morsure venimeuse')) {
-        applyDot(target, {
-          kind: 'poison', ticksLeft: 4, tickIntervalMs: 1000, rgb: '124, 179, 66', source: character,
-          skillName: 'Morsure venimeuse (poison)', damagePerTick: Math.round(character.stats.intelligence * 0.12),
-        });
-      }
-    },
-  },
-  // Soins hybrides Savoir + Intelligence (demande utilisateur explicite, ~70/30 -- voir Lumière
-  // divine plus haut pour le détail du calibrage).
-  epinesEmpoisonnees: {
-    id: 'epinesEmpoisonnees', name: 'Épines empoisonnées', shortLabel: 'Épines\nempois.', targeting: 'enemy', cooldownMs: 10000,
-    description: "Consomme le poison accumulé sur les ennemis pour soigner l'allié le plus faible.",
-    cast(character) {
-      // Consomme le poison accumulé sur tous les ennemis (voir applyDot/poisonStacks) pour
-      // rendre des PV à l'allié le plus mal en point -- x2 par stack consommée.
-      let stacksConsumed = 0;
-      for (const enemy of enemies) {
-        stacksConsumed += enemy.poisonStacks || 0;
-        enemy.poisonStacks = 0;
-      }
-      if (stacksConsumed > 0) {
-        const heal = stacksConsumed * 2 * Math.round(character.stats.savoir * 0.14 + character.stats.intelligence * 0.06);
-        healCharacter(lowestHpAlly() || character, heal, character, 'Épines empoisonnées');
-      }
-    },
-  },
-  carapaceDEcorce: {
-    id: 'carapaceDEcorce', name: "Carapace d'écorce", shortLabel: "Carapace\nd'écorce", targeting: 'ally', cooldownMs: 8000,
-    description: "Bouclier + soin sur l'allié le plus faible.",
-    cast(character) {
-      const target = lowestHpAlly() || character;
-      const shield = 10 + Math.round(character.stats.intelligence * 0.8);
-      target.shieldHp = shield;
-      target.shieldMax = shield;
-      target.shieldExpiresAt = performance.now() + 6000;
-      healCharacter(target, Math.round(character.stats.savoir * 0.21 + character.stats.intelligence * 0.09), character, "Carapace d'écorce");
-    },
-  },
-  chantDeLaForet: {
-    id: 'chantDeLaForet', name: 'Chant de la forêt', shortLabel: 'Chant de\nla forêt', targeting: 'ally', cooldownMs: 14000,
-    description: 'Soigne tout le groupe.',
-    cast(character) {
-      const heal = Math.round(character.stats.savoir * 0.28 + character.stats.intelligence * 0.12);
-      for (const c of characters) {
-        if (c.playerControlled && c.hp > 0) healCharacter(c, heal, character, 'Chant de la forêt');
-      }
-    },
-  },
-  // "ground" (demande utilisateur explicite : premier essai du mécanisme de visée au sol, voir
-  // groundTargetSkill) : le joueur tape la case, vise un point du champ de bataille (aperçu du
-  // rayon en direct, voir draw()), puis confirme au relâchement -- cast(character, point) reçoit
-  // ce point plutôt qu'un personnage/une cible. groundRadius sert à la fois à la prévisualisation
-  // et à l'effet réel (voir SEED_RADIUS/spawnSeed).
+  // Refonte complète (demande utilisateur explicite, remplace l'ancien kit poison/bouclier/soin
+  // de groupe) : le Druide est maintenant un "jardinier". Son attaque de base est un soin sur la
+  // durée (voir healerOnly/applyHot dans updateCombat) qui, en plus de soigner, fait germer les
+  // graines proches (voir feedNearbySeeds) -- une graine devient une "plante" permanente une fois
+  // assez de soin cumulé reçu à sa portée (SEED_GERMINATION_THRESHOLD). "Planter une graine" pose
+  // la graine (voir le mécanisme de visée au sol, groundTargetSkill) ; les 3 autres sorts sont des
+  // interrupteurs (pas de cible, pas d'effet direct au cast) qui activent/désactivent un type de
+  // zone pour TOUTES les plantes germées du Druide à la fois -- cumulables entre eux (voir
+  // updatePlantEffects).
   planterGraine: {
     id: 'planterGraine', name: 'Planter une graine', shortLabel: 'Planter\nune graine', targeting: 'ground', cooldownMs: 8000,
     groundRadius: SEED_RADIUS,
-    description: "Plante une graine au sol : soigne les alliés proches toutes les 2s pendant 12s.",
+    description: "Plante une graine au sol. Éclot en plante permanente si elle reçoit assez de soin à proximité.",
     cast(character, point) {
       spawnSeed(character, point.x, point.y);
+    },
+  },
+  zoneDeSoin: {
+    id: 'zoneDeSoin', name: 'Zone de soin', shortLabel: 'Zone de\nsoin', targeting: 'self', cooldownMs: 3000,
+    toggleField: 'plantHealZone',
+    description: "Active/désactive : les plantes germées soignent les alliés proches toutes les 2s.",
+    cast(character) {
+      character.plantHealZone = !character.plantHealZone;
+    },
+  },
+  zoneDeDegats: {
+    id: 'zoneDeDegats', name: 'Zone de dégâts', shortLabel: 'Zone de\ndégâts', targeting: 'self', cooldownMs: 3000,
+    toggleField: 'plantDamageZone',
+    description: "Active/désactive : les plantes germées endommagent les ennemis proches toutes les 2s.",
+    cast(character) {
+      character.plantDamageZone = !character.plantDamageZone;
+    },
+  },
+  zoneDeVitesse: {
+    id: 'zoneDeVitesse', name: 'Zone de vitesse', shortLabel: 'Zone de\nvitesse', targeting: 'self', cooldownMs: 3000,
+    toggleField: 'plantSpeedZone',
+    description: "Active/désactive : les plantes germées ralentissent les ennemis et accélèrent les alliés proches.",
+    cast(character) {
+      character.plantSpeedZone = !character.plantSpeedZone;
     },
   },
 
@@ -2880,7 +2948,7 @@ const CLASS_SKILLS = {
   Mage: ['eclatDeGlace', 'novaDeGivre', 'voileDeGivre', 'gel'],
   Pyromane: ['bouleDeFeu', 'pluieDeFeu', 'bouclierDeFlammes', 'explosion'],
   Chasseur: ['tirPercant', 'tirEnRafale', 'repliTactique', 'piegeAOurs'],
-  Druide: ['morsureVenimeuse', 'epinesEmpoisonnees', 'carapaceDEcorce', 'chantDeLaForet', 'planterGraine'],
+  Druide: ['planterGraine', 'zoneDeSoin', 'zoneDeDegats', 'zoneDeVitesse'],
   'Prêtre': ['motDeDouleur', 'cercleSacre', 'voileProtecteur', 'soinMajeur'],
   Sorcier: ['drainDeVie', 'epidemie', 'pacteDeProtection', 'malediction'],
   Chaman: ['frappeDesEsprits', 'chaineDEclairs', 'boucliersDesAncetres', 'totem'],
@@ -3819,6 +3887,9 @@ function activeStatusBadges(character, now) {
   if (character.pyroBurnStacks > 0) badges.push({ text: `Brûlure ${character.pyroBurnStacks}`, rgb: '255, 87, 34' });
   if (character.poisonStacks > 0) badges.push({ text: `Poison ${character.poisonStacks}`, rgb: '124, 179, 66' });
   if (character.noteStacks > 0) badges.push({ text: `Notes ${character.noteStacks}`, rgb: '38, 166, 154' });
+  if (character.plantHealZone) badges.push({ text: 'Zone soin', rgb: '102, 187, 106' });
+  if (character.plantDamageZone) badges.push({ text: 'Zone dégâts', rgb: '102, 187, 106' });
+  if (character.plantSpeedZone) badges.push({ text: 'Zone vitesse', rgb: '102, 187, 106' });
 
   if (character.shieldHp > 0 && (character.shieldExpiresAt || 0) > now) {
     badges.push({ text: `Bouclier ${character.shieldHp}`, rgb: '255, 213, 79' });
@@ -4380,8 +4451,12 @@ function drawSkillSlot(character, skill, slotX, slotY, slotSize, now) {
   const readyAt = (character.cooldowns && character.cooldowns[skill.id]) || 0;
   const remaining = locked ? skill.cooldownMs : Math.max(0, readyAt - now);
   const onCooldown = locked || remaining > 0;
+  // Sort "interrupteur" actif (Zones du Druide, voir toggleField) : fond distinct pour montrer
+  // que l'effet tourne en continu, indépendamment du cooldown (qui ne concerne ici que la
+  // fréquence à laquelle on peut re-basculer la case, pas une durée d'effet).
+  const toggledOn = skill.toggleField && character[skill.toggleField];
 
-  ctx.fillStyle = '#ffffff20';
+  ctx.fillStyle = toggledOn ? '#66bb6a44' : '#ffffff20';
   ctx.fillRect(slotX, slotY, slotSize, slotSize);
 
   ctx.save();
@@ -4412,8 +4487,8 @@ function drawSkillSlot(character, skill, slotX, slotY, slotSize, now) {
   // En cours de visée (voir groundTargetSkill) : liseré vert plutôt que le contour standard, pour
   // que le joueur voie clairement quelle case attend un point au sol.
   const aiming = groundTargetSkill && groundTargetSkill.character === character && groundTargetSkill.skillId === skill.id;
-  ctx.strokeStyle = aiming ? '#66bb6a' : '#ffffff55';
-  ctx.lineWidth = aiming ? 3 : 1;
+  ctx.strokeStyle = aiming || toggledOn ? '#66bb6a' : '#ffffff55';
+  ctx.lineWidth = aiming || toggledOn ? 3 : 1;
   ctx.strokeRect(slotX + 0.5, slotY + 0.5, slotSize - 1, slotSize - 1);
 
   if (!locked) {
@@ -5123,6 +5198,10 @@ function worldLevelPositions() {
 function resetTransientCombatState(entity) {
   entity.attackTarget = null;
   entity.dotEffects = [];
+  entity.hotEffects = [];
+  entity.plantHealZone = false;
+  entity.plantDamageZone = false;
+  entity.plantSpeedZone = false;
   entity.isMoving = false;
   entity.pathPoints = [];
   entity.shieldHp = 0;
@@ -6079,6 +6158,7 @@ function loop(now) {
     for (const character of characters) {
       updateCombat(character, now);
       updateDotEffects(character, now);
+      updateHotEffects(character, now);
       updatePyroBurn(character, now);
       updateRempartStacks(character, now);
       updateShield(character, now);
