@@ -1888,6 +1888,15 @@ function dealDamage(target, amount, rgb, source, isCrit, skillLabel) {
   if (!target.playerControlled && source && source.playerControlled) {
     addOwnActionThreat(source, afterReduction, now); // le joueur inflige des dégâts à l'ennemi
     recordDamageStat(source.index, 'dealt', afterReduction, skillLabel, target.name || 'Ennemi');
+    // Interrompt la descente (voir startEnemyDescent) dès le premier coup reçu, peu importe qu'il
+    // ait déjà atteint le milieu de l'écran ou non (demande utilisateur explicite) -- repasse en
+    // mode normal tout de suite : updateEnemyAI ciblera l'attaquant (menace tout juste générée) et
+    // relance une approche fraîche vers lui plutôt que de terminer le trajet de descente en cours.
+    if (target.descending) {
+      target.descending = false;
+      target.isMoving = false;
+      target.pathPoints = [];
+    }
   } else if (target.playerControlled && source && !source.playerControlled) {
     addThreat(target, afterReduction, now); // le joueur subit des dégâts de l'ennemi
     recordDamageStat(target.index, 'taken', afterReduction, skillLabel, source.name || 'Ennemi');
