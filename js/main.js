@@ -2612,8 +2612,8 @@ const SKILLS = {
       character.plantSpeedZoneUntil = performance.now() + PLANT_ZONE_ACTIVE_DURATION_MS;
     },
   },
-  ultime: {
-    id: 'ultime', name: 'Ultime', shortLabel: 'Ultime', targeting: 'self', cooldownMs: 60000,
+  ultimeDruide: {
+    id: 'ultimeDruide', name: 'Ultime', shortLabel: 'Ultime', targeting: 'self', cooldownMs: 60000,
     description: "Fait germer instantanément toutes les graines en pousse, et réduit de moitié le temps de recharge restant de Planter une graine.",
     cast(character) {
       const now = performance.now();
@@ -2903,9 +2903,10 @@ const SKILLS = {
     id: 'melodieApaisante', name: 'Mélodie apaisante', shortLabel: 'Mélodie\napaisante', targeting: 'self', cooldownMs: 2000,
     description: "Soigne (5% Savoir par stack de Note) tous les alliés proches qui en ont, puis consomme leurs Notes.",
     cast(character) {
+      const radius = ZONE_RADIUS * (character.bardZoneRadiusMultiplier || 1);
       for (const c of characters) {
         if (!c.playerControlled || c.hp <= 0 || !(c.noteStacks > 0)) continue;
-        if (Math.hypot(c.x - character.x, c.y - character.y) > ZONE_RADIUS) continue;
+        if (Math.hypot(c.x - character.x, c.y - character.y) > radius) continue;
         const heal = Math.round(character.stats.savoir * 0.05 * c.noteStacks);
         healCharacter(c, heal, character, 'Mélodie apaisante');
         c.noteStacks = 0;
@@ -2917,9 +2918,10 @@ const SKILLS = {
     description: "+2% vitesse de déplacement par stack de Note (3s) aux alliés proches qui en ont, puis consomme leurs Notes.",
     cast(character) {
       const now = performance.now();
+      const radius = ZONE_RADIUS * (character.bardZoneRadiusMultiplier || 1);
       for (const c of characters) {
         if (!c.playerControlled || c.hp <= 0 || !(c.noteStacks > 0)) continue;
-        if (Math.hypot(c.x - character.x, c.y - character.y) > ZONE_RADIUS) continue;
+        if (Math.hypot(c.x - character.x, c.y - character.y) > radius) continue;
         // Réutilise slowMultiplier/slowUntil (pensé pour les ralentissements, voir Éclat de
         // givre) avec un multiplicateur > 1 : générique, pas de raison de dupliquer le mécanisme
         // pour un bonus plutôt qu'un malus (voir aussi le badge dans activeStatusBadges).
@@ -2934,9 +2936,10 @@ const SKILLS = {
     description: "-2% dégâts subis par stack de Note (3s) aux alliés proches qui en ont, puis consomme leurs Notes.",
     cast(character) {
       const now = performance.now();
+      const radius = ZONE_RADIUS * (character.bardZoneRadiusMultiplier || 1);
       for (const c of characters) {
         if (!c.playerControlled || c.hp <= 0 || !(c.noteStacks > 0)) continue;
-        if (Math.hypot(c.x - character.x, c.y - character.y) > ZONE_RADIUS) continue;
+        if (Math.hypot(c.x - character.x, c.y - character.y) > radius) continue;
         c.damageReductionFactor = 0.02 * c.noteStacks;
         c.damageReductionUntil = now + BARD_BUFF_DURATION_MS;
         c.noteStacks = 0;
@@ -2948,13 +2951,29 @@ const SKILLS = {
     description: "+2% dégâts infligés par stack de Note (3s) aux alliés proches qui en ont, puis consomme leurs Notes.",
     cast(character) {
       const now = performance.now();
+      const radius = ZONE_RADIUS * (character.bardZoneRadiusMultiplier || 1);
       for (const c of characters) {
         if (!c.playerControlled || c.hp <= 0 || !(c.noteStacks > 0)) continue;
-        if (Math.hypot(c.x - character.x, c.y - character.y) > ZONE_RADIUS) continue;
+        if (Math.hypot(c.x - character.x, c.y - character.y) > radius) continue;
         c.damageOutputMultiplier = 1 + 0.02 * c.noteStacks;
         c.damageOutputUntil = now + BARD_BUFF_DURATION_MS;
         c.noteStacks = 0;
       }
+    },
+  },
+  ultimeBarde: {
+    id: 'ultimeBarde', name: 'Ultime', shortLabel: 'Ultime', targeting: 'self', cooldownMs: 60000,
+    description: "Donne à chaque allié la somme des Notes de tout le groupe, et double la portée des zones du Barde pour le reste du combat.",
+    cast(character) {
+      const now = performance.now();
+      const allies = characters.filter((c) => c.playerControlled && c.hp > 0);
+      let total = 0;
+      for (const c of allies) total += c.noteStacks || 0;
+      for (const c of allies) {
+        c.noteStacks = total;
+        c.noteExpiresAt = now + NOTE_DURATION_MS;
+      }
+      character.bardZoneRadiusMultiplier = 2;
     },
   },
 };
@@ -2967,12 +2986,12 @@ const CLASS_SKILLS = {
   Mage: ['eclatDeGlace', 'novaDeGivre', 'voileDeGivre', 'gel'],
   Pyromane: ['bouleDeFeu', 'pluieDeFeu', 'bouclierDeFlammes', 'explosion'],
   Chasseur: ['tirPercant', 'tirEnRafale', 'repliTactique', 'piegeAOurs'],
-  Druide: ['planterGraine', 'zoneDeSoin', 'zoneDeDegats', 'zoneDeVitesse', 'ultime'],
+  Druide: ['planterGraine', 'zoneDeSoin', 'zoneDeDegats', 'zoneDeVitesse', 'ultimeDruide'],
   'Prêtre': ['motDeDouleur', 'cercleSacre', 'voileProtecteur', 'soinMajeur'],
   Sorcier: ['drainDeVie', 'epidemie', 'pacteDeProtection', 'malediction'],
   Chaman: ['frappeDesEsprits', 'chaineDEclairs', 'boucliersDesAncetres', 'totem'],
   Gardien: ['coupDeBouclier', 'rempart', 'criDeDefi', 'represailles'],
-  Barde: ['melodieApaisante', 'rythmeEntrainant', 'refrainProtecteur', 'crescendo'],
+  Barde: ['melodieApaisante', 'rythmeEntrainant', 'refrainProtecteur', 'crescendo', 'ultimeBarde'],
 };
 
 // Même critère de "à portée" que l'attaque de base (voir updateCombat) : corps à corps = juste à
@@ -5221,6 +5240,7 @@ function resetTransientCombatState(entity) {
   entity.plantHealZoneUntil = 0;
   entity.plantDamageZoneUntil = 0;
   entity.plantSpeedZoneUntil = 0;
+  entity.bardZoneRadiusMultiplier = 1;
   entity.isMoving = false;
   entity.pathPoints = [];
   entity.shieldHp = 0;
