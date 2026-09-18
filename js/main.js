@@ -2573,11 +2573,13 @@ const SKILLS = {
   // graines proches (voir feedNearbySeeds) -- une graine devient une "plante" permanente une fois
   // assez de TICS de ce soin reçus à sa portée (SEED_GERMINATION_TICKS, pas un montant : demande
   // utilisateur explicite). "Planter une graine" pose la graine (voir le mécanisme de visée au
-  // sol, groundTargetSkill). Une plante germée ne fait toujours rien toute seule -- les 3 autres
-  // sorts rendent TOUTES les plantes du Druide actives pour un type de zone donné pendant
-  // PLANT_ZONE_ACTIVE_DURATION_MS à partir du moment où on les lance (effet immédiat, pas un
-  // interrupteur permanent : demande utilisateur explicite) -- cumulables entre eux (voir
-  // updatePlantEffects, qui vérifie juste si on est encore dans la fenêtre de chaque *Until).
+  // sol, groundTargetSkill). Une plante germée ne fait toujours rien toute seule -- les sorts
+  // zoneDeSoin/zoneDeDegats/zoneDeVitesse rendent TOUTES les plantes du Druide actives pour un
+  // type de zone donné pendant PLANT_ZONE_ACTIVE_DURATION_MS à partir du moment où on les lance
+  // (effet immédiat, pas un interrupteur permanent : demande utilisateur explicite) -- cumulables
+  // entre eux (voir updatePlantEffects, qui vérifie juste si on est encore dans la fenêtre de
+  // chaque *Until). Ultime (cd 1 min) fait germer instantanément toutes les graines en pousse et
+  // réduit de moitié le temps de recharge restant de Planter une graine.
   planterGraine: {
     id: 'planterGraine', name: 'Planter une graine', shortLabel: 'Planter\nune graine', targeting: 'ground', cooldownMs: 8000,
     groundRadius: SEED_RADIUS,
@@ -2608,6 +2610,20 @@ const SKILLS = {
     description: "Pendant 5s, les plantes germées ralentissent les ennemis et accélèrent les alliés proches.",
     cast(character) {
       character.plantSpeedZoneUntil = performance.now() + PLANT_ZONE_ACTIVE_DURATION_MS;
+    },
+  },
+  ultime: {
+    id: 'ultime', name: 'Ultime', shortLabel: 'Ultime', targeting: 'self', cooldownMs: 60000,
+    description: "Fait germer instantanément toutes les graines en pousse, et réduit de moitié le temps de recharge restant de Planter une graine.",
+    cast(character) {
+      const now = performance.now();
+      for (const seed of groundSeeds) {
+        if (seed.source === character) seed.germinated = true;
+      }
+      const readyAt = character.cooldowns && character.cooldowns['planterGraine'];
+      if (readyAt && readyAt > now) {
+        character.cooldowns['planterGraine'] = now + (readyAt - now) / 2;
+      }
     },
   },
 
@@ -2951,7 +2967,7 @@ const CLASS_SKILLS = {
   Mage: ['eclatDeGlace', 'novaDeGivre', 'voileDeGivre', 'gel'],
   Pyromane: ['bouleDeFeu', 'pluieDeFeu', 'bouclierDeFlammes', 'explosion'],
   Chasseur: ['tirPercant', 'tirEnRafale', 'repliTactique', 'piegeAOurs'],
-  Druide: ['planterGraine', 'zoneDeSoin', 'zoneDeDegats', 'zoneDeVitesse'],
+  Druide: ['planterGraine', 'zoneDeSoin', 'zoneDeDegats', 'zoneDeVitesse', 'ultime'],
   'Prêtre': ['motDeDouleur', 'cercleSacre', 'voileProtecteur', 'soinMajeur'],
   Sorcier: ['drainDeVie', 'epidemie', 'pacteDeProtection', 'malediction'],
   Chaman: ['frappeDesEsprits', 'chaineDEclairs', 'boucliersDesAncetres', 'totem'],
