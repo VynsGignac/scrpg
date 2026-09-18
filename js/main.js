@@ -603,6 +603,18 @@ const BARD_BUFF_DURATION_MS = 3000;
 // temporaire, pas définitif) -- voir SKILLS.ultimeBarde/bardZoneRadiusUntil.
 const BARD_ULTIME_ZONE_DURATION_MS = 12000;
 
+// Runes du Prêtre (refonte "heal pure et brut", demande utilisateur explicite) : +1 par attaque de
+// base (voir updateCombat), consommées en une fois par l'Ultime (voir SKILLS.ultimePretre) pour
+// booster le PROCHAIN sort lancé (character.pendingRuneBuff, lu et remis à 0 par chacun des 4
+// autres sorts du Prêtre).
+const RUNE_MAX_STACKS = 15;
+// Canalisation divine (voir SKILLS.canalisationDivine) : mana rendu à chaque attaque une fois le
+// passif actif, et durée de la fenêtre de réduction de cooldown (0.5s par attaque pendant cette
+// fenêtre) offerte par la consommation de runes -- proportionnelle au nombre de runes consommées.
+const PRIEST_MANA_RESTORE_PER_ATTACK = 5;
+const PRIEST_CD_REDUCE_MS_PER_RUNE = 3000;
+const PRIEST_CD_REDUCE_PER_ATTACK_MS = 500;
+
 // Pose/rafraîchit une Note sur "target" (jusqu'à NOTE_MAX_STACKS) -- un seul minuteur partagé par
 // les stacks (comme shieldExpiresAt) plutôt qu'un par stack : la pile entière expire ensemble
 // NOTE_DURATION_MS après la DERNIÈRE Note posée, elle ne "fond" pas stack par stack.
@@ -1230,7 +1242,7 @@ function nearestEnemyTo(character) {
 const AUTO_DEFENSIVE_SKILLS = new Set([
   'murSacre', 'formeDOmbre', 'dephasage', 'postureDefensive', 'peauDePierre',
   'voileDeGivre', 'bouclierDeFlammes', 'repliTactique',
-  'voileProtecteur', 'pacteDeProtection', 'boucliersDesAncetres',
+  'pacteDeProtection', 'boucliersDesAncetres',
 ]);
 const AUTO_DEFENSIVE_WINDOW_MS = 4000;
 const AUTO_ABILITY_INTERVAL_MS = 1000; // délai mini entre deux compétences lancées par l'IA
@@ -1531,6 +1543,22 @@ function updateCombat(character, now) {
       source: character,
       skillName: 'Attaque (soin sur la durée)',
     });
+  } else if (healerOnly && character.className === 'Prêtre') {
+    // Heal classique (demande utilisateur explicite : "plus orienté vers le heal pure et brut"),
+    // mais génère une Rune à chaque coup (voir RUNE_MAX_STACKS/SKILLS.ultimePretre) et, une fois
+    // Canalisation divine active, rend du mana des deux côtés -- avec en plus une réduction de
+    // cooldown si la fenêtre offerte par la consommation de runes est encore active.
+    healCharacter(target, amount, character);
+    character.runeStacks = Math.min(RUNE_MAX_STACKS, (character.runeStacks || 0) + 1);
+    if (character.priestManaPassive) {
+      target.mana = Math.min(target.manaMax, (target.mana || 0) + PRIEST_MANA_RESTORE_PER_ATTACK);
+      character.mana = Math.min(character.manaMax, (character.mana || 0) + PRIEST_MANA_RESTORE_PER_ATTACK);
+      if (now < (character.priestCdReduceUntil || 0) && character.cooldowns) {
+        for (const key in character.cooldowns) {
+          character.cooldowns[key] = Math.max(now, character.cooldowns[key] - PRIEST_CD_REDUCE_PER_ATTACK_MS);
+        }
+      }
+    }
   } else if (healerOnly) {
     healCharacter(target, amount, character); // pas de skillLabel -- retombe sur "Soin de base" (voir recordHealStat), comme dealDamage sur "Attaque de base"
   } else {
@@ -2128,11 +2156,13 @@ function updateShield(character, now) {
   }
   if (character.shieldVengeful && now >= (character.shieldExpiresAt || 0) && character.shieldAbsorbedTotal > 0) {
     const target = character.lastShieldAttacker;
-    const amount = character.shieldAbsorbedTotal;
+    // shieldReflectMultiplier (demande utilisateur explicite, voir Bouclier sacré du Prêtre) :
+    // module la force du renvoi -- 1 par défaut (Pacte de protection du Sorcier, renvoi complet).
+    const amount = Math.round(character.shieldAbsorbedTotal * (character.shieldReflectMultiplier || 1));
     character.shieldVengeful = false;
     character.shieldAbsorbedTotal = 0;
     character.lastShieldAttacker = null;
-    if (target && target.hp > 0) dealDamage(target, amount, '81, 45, 168', character, false, 'Pacte de protection (renvoi)');
+    if (target && target.hp > 0 && amount > 0) dealDamage(target, amount, '81, 45, 168', character, false, 'Renvoi de bouclier');
   }
 }
 
@@ -2631,76 +2661,86 @@ const SKILLS = {
   },
 
   // ============================== PRÊTRE (Intelligence/Savoir, distance) ==============================
-  // Gros soin mono-cible du jeu (demande utilisateur explicite) : Soin majeur pose un stack de
-  // "Grâce" (jusqu'à PRIEST_GRACE_MAX) à chaque lancer, consommé par le PROCHAIN soin (ici Mot de
-  // douleur, son soin de zone) pour un bonus cumulatif -- enchaîner Soin majeur avant de déclencher
-  // Mot de douleur rentabilise l'attente. Mot de douleur rend aussi un peu de mana à qui il soigne.
-  motDeDouleur: {
-    id: 'motDeDouleur', name: 'Mot de douleur', shortLabel: 'Mot de\ndouleur', targeting: 'enemy', cooldownMs: 8000,
-    description: '75% Intelligence + soigne tout le groupe (boosté par la Grâce) et rend un peu de mana.',
-    cast(character, target) {
-      // Dégâts +50% (demande utilisateur explicite) : le Prêtre restait très en retrait niveau
-      // dégâts même après les cooldowns individualisés -- il ne sera jamais un vrai DPS, mais ne
-      // doit pas non plus être totalement inoffensif.
-      const { amount, crit } = computeStatDamage(character, 'intelligence', 0.75);
-      if (dealDamage(target, amount, '245, 245, 245', character, crit, 'Mot de douleur')) {
-        const graceStacks = character.priestGraceStacks || 0;
-        character.priestGraceStacks = 0;
-        const heal = Math.round(amount * 0.25 * (1 + graceStacks * 0.1));
-        const manaRestore = Math.round(character.stats.savoir * 0.2);
-        for (const c of characters) {
-          if (!c.playerControlled || c.hp <= 0) continue;
-          healCharacter(c, heal, character, 'Mot de douleur');
-          if (manaRestore > 0) c.mana = Math.min(c.manaMax, c.mana + manaRestore);
-        }
+  // Refonte complète (demande utilisateur explicite : "plus orienté vers le heal pure et brut").
+  // Attaque de base = soin classique (voir healerOnly dans updateCombat, inchangé), qui pose en
+  // plus 1 stack de Rune (character.runeStacks, jusqu'à RUNE_MAX_STACKS). Ultime consomme TOUTES
+  // les Runes actuelles et stocke le nombre consommé dans character.pendingRuneBuff -- le PROCHAIN
+  // des 4 sorts ci-dessous lancé (peu importe lequel) le lit et l'applique à son propre effet, puis
+  // le remet à 0 (un seul sort en profite par activation de l'Ultime).
+  sanctuaire: {
+    id: 'sanctuaire', name: 'Sanctuaire', shortLabel: 'Sanctuaire', targeting: 'self', cooldownMs: 12000,
+    description: "Soigne tous les alliés proches. Les runes consommées agrandissent la zone et augmentent le soin.",
+    cast(character) {
+      const runesUsed = character.pendingRuneBuff || 0;
+      character.pendingRuneBuff = 0;
+      const radius = ZONE_RADIUS * (1 + 0.1 * runesUsed);
+      const heal = Math.round((character.stats.savoir * 0.25 + character.stats.intelligence * 0.1) * (1 + 0.15 * runesUsed));
+      for (const c of characters) {
+        if (!c.playerControlled || c.hp <= 0) continue;
+        if (Math.hypot(c.x - character.x, c.y - character.y) > radius) continue;
+        healCharacter(c, heal, character, 'Sanctuaire');
       }
     },
   },
-  cercleSacre: {
-    id: 'cercleSacre', name: 'Cercle sacré', shortLabel: 'Cercle\nsacré', targeting: 'self', cooldownMs: 12000,
-    description: '-25% dégâts subis pour les alliés proches ; brûlure + ralentissement aux ennemis proches.',
+  bouclierSacre: {
+    id: 'bouclierSacre', name: 'Bouclier sacré', shortLabel: 'Bouclier\nsacré', targeting: 'ally', cooldownMs: 10000,
+    description: "Bouclier sur l'allié le plus faible. Les runes consommées l'augmentent et ajoutent un renvoi de dégâts.",
     cast(character) {
-      const now = performance.now();
-      for (const ally of characters) {
-        if (!ally.playerControlled || ally.hp <= 0) continue;
-        if (Math.hypot(ally.x - character.x, ally.y - character.y) > ZONE_RADIUS) continue;
-        ally.damageReductionFactor = 0.25;
-        ally.damageReductionUntil = now + 4000;
-      }
-      for (const enemy of enemies) {
-        if (enemy.hp <= 0) continue;
-        if (Math.hypot(enemy.x - character.x, enemy.y - character.y) > ZONE_RADIUS) continue;
-        applyDot(enemy, {
-          kind: 'burn', ticksLeft: 3, tickIntervalMs: 1000, rgb: '245, 245, 245', source: character,
-          skillName: 'Cercle sacré', damagePerTick: Math.round(character.stats.intelligence * 0.15), // +50%, voir Mot de douleur
-        });
-        enemy.slowMultiplier = 0.6;
-        enemy.slowUntil = now + 3000;
-      }
-    },
-  },
-  voileProtecteur: {
-    id: 'voileProtecteur', name: 'Voile protecteur', shortLabel: 'Voile\nprotecteur', targeting: 'self', cooldownMs: 10000,
-    description: 'Bouclier sur soi.',
-    cast(character) {
-      const shield = 15 + Math.round(character.stats.savoir * 1.0);
-      character.shieldHp = shield;
-      character.shieldMax = shield;
-      character.shieldExpiresAt = performance.now() + 6000;
-    },
-  },
-  soinMajeur: {
-    id: 'soinMajeur', name: 'Soin majeur', shortLabel: 'Soin\nmajeur', targeting: 'ally', cooldownMs: 5000,
-    description: "Gros soin sur l'allié le plus faible (plus fort s'il vient d'être touché). Pose un stack de Grâce (jusqu'à 5) pour le prochain Mot de douleur.",
-    cast(character) {
+      const runesUsed = character.pendingRuneBuff || 0;
+      character.pendingRuneBuff = 0;
       const target = lowestHpAlly() || character;
-      const recentlyHit = performance.now() - (target.lastDamageTakenAt || 0) <= 3000;
-      // Soin hybride Savoir + Intelligence (demande utilisateur explicite, ~70/30).
-      const power = character.stats.savoir * 0.7 + character.stats.intelligence * 0.3;
-      const heal = Math.round(power * (recentlyHit ? 1.1 : 0.9));
-      healCharacter(target, heal, character, 'Soin majeur');
-      // Pose un stack de Grâce (jusqu'à 5) consommé par le prochain Mot de douleur -- voir plus haut.
-      character.priestGraceStacks = Math.min(5, (character.priestGraceStacks || 0) + 1);
+      const shield = Math.round((15 + character.stats.savoir * 0.9) * (1 + 0.15 * runesUsed));
+      target.shieldHp = shield;
+      target.shieldMax = shield;
+      target.shieldExpiresAt = performance.now() + 6000;
+      // Renvoi de dégâts (voir shieldVengeful, déjà utilisé par le Pacte de protection du
+      // Sorcier) : réutilisé tel quel, avec un multiplicateur propre au Prêtre
+      // (shieldReflectMultiplier) plutôt que de dupliquer le mécanisme -- pas de renvoi du tout
+      // sans runes consommées (demande utilisateur explicite : "ajoute" un renvoi).
+      if (runesUsed > 0) {
+        target.shieldVengeful = true;
+        target.shieldReflectMultiplier = 0.2 * runesUsed;
+        target.shieldAbsorbedTotal = 0;
+        target.lastShieldAttacker = null;
+      }
+    },
+  },
+  canalisationDivine: {
+    id: 'canalisationDivine', name: 'Canalisation divine', shortLabel: 'Canalisation\ndivine', targeting: 'self', cooldownMs: 8000,
+    description: "Passif permanent : chaque attaque restaure du mana à la cible et au Prêtre. Les runes consommées ajoutent -0.5s de cd par attaque, pendant une durée proportionnelle aux runes.",
+    cast(character) {
+      character.priestManaPassive = true;
+      const runesUsed = character.pendingRuneBuff || 0;
+      character.pendingRuneBuff = 0;
+      if (runesUsed > 0) {
+        character.priestCdReduceUntil = performance.now() + runesUsed * PRIEST_CD_REDUCE_MS_PER_RUNE;
+      }
+    },
+  },
+  resurrection: {
+    id: 'resurrection', name: 'Résurrection', shortLabel: 'Résur-\nrection', targeting: 'self', cooldownMs: 30000,
+    description: "Ressuscite un allié mort, au prix de 80% du mana actuel. Les runes consommées ressuscitent tous les alliés morts à la place.",
+    cast(character) {
+      const runesUsed = character.pendingRuneBuff || 0;
+      character.pendingRuneBuff = 0;
+      const dead = characters.filter((c) => c.playerControlled && c.hp <= 0);
+      if (dead.length === 0) return;
+      const manaCost = Math.round((character.mana || 0) * 0.8);
+      character.mana = Math.max(0, (character.mana || 0) - manaCost);
+      const revived = runesUsed > 0 ? dead : [dead[0]];
+      for (const c of revived) c.hp = Math.round(c.hpMax * 0.5);
+    },
+  },
+  // "Ultime" ici est une catégorie de sort (plus puissant, moins fréquent), pas un nom propre --
+  // voir la même remarque sur ultimeDruide/ultimeBarde. Cooldown volontairement plus court que les
+  // deux autres Ultime (demande utilisateur explicite : 20s au lieu de 60s).
+  ultimePretre: {
+    id: 'ultimePretre', name: 'Ultime', shortLabel: 'Ultime', targeting: 'self', cooldownMs: 20000,
+    description: "Consomme toutes les Runes actuelles : le prochain sort lancé est boosté en fonction du nombre de runes consommées.",
+    cast(character) {
+      const runesUsed = character.runeStacks || 0;
+      character.runeStacks = 0;
+      character.pendingRuneBuff = runesUsed;
     },
   },
 
@@ -2995,7 +3035,7 @@ const CLASS_SKILLS = {
   Pyromane: ['bouleDeFeu', 'pluieDeFeu', 'bouclierDeFlammes', 'explosion'],
   Chasseur: ['tirPercant', 'tirEnRafale', 'repliTactique', 'piegeAOurs'],
   Druide: ['planterGraine', 'zoneDeSoin', 'zoneDeDegats', 'zoneDeVitesse', 'ultimeDruide'],
-  'Prêtre': ['motDeDouleur', 'cercleSacre', 'voileProtecteur', 'soinMajeur'],
+  'Prêtre': ['sanctuaire', 'bouclierSacre', 'canalisationDivine', 'resurrection', 'ultimePretre'],
   Sorcier: ['drainDeVie', 'epidemie', 'pacteDeProtection', 'malediction'],
   Chaman: ['frappeDesEsprits', 'chaineDEclairs', 'boucliersDesAncetres', 'totem'],
   Gardien: ['coupDeBouclier', 'rempart', 'criDeDefi', 'represailles'],
@@ -3928,7 +3968,9 @@ function activeStatusBadges(character, now) {
   const badges = [];
 
   if (character.rage > 0) badges.push({ text: `Rage ${character.rage}`, rgb: '158, 158, 158' });
-  if (character.priestGraceStacks > 0) badges.push({ text: `Grâce ${character.priestGraceStacks}`, rgb: '245, 245, 245' });
+  if (character.runeStacks > 0) badges.push({ text: `Runes ${character.runeStacks}`, rgb: '255, 213, 79' });
+  if (character.priestManaPassive) badges.push({ text: 'Canalisation', rgb: '255, 213, 79' });
+  if ((character.priestCdReduceUntil || 0) > now) badges.push({ text: 'Réduc. cd/attaque', rgb: '255, 213, 79' });
   if (character.rempartStacks > 0) badges.push({ text: `Rempart ${character.rempartStacks}`, rgb: '84, 110, 122' });
   if (character.pyroBurnStacks > 0) badges.push({ text: `Brûlure ${character.pyroBurnStacks}`, rgb: '255, 87, 34' });
   if (character.poisonStacks > 0) badges.push({ text: `Poison ${character.poisonStacks}`, rgb: '124, 179, 66' });
@@ -5282,7 +5324,11 @@ function resetTransientCombatState(entity) {
   entity.pyroBurnStacks = 0;
   entity.pyroBurnExpiresAt = 0;
   entity.pyroBurnNextTickAt = 0;
-  entity.priestGraceStacks = 0;
+  entity.runeStacks = 0;
+  entity.pendingRuneBuff = 0;
+  entity.priestManaPassive = false;
+  entity.priestCdReduceUntil = 0;
+  entity.shieldReflectMultiplier = 1;
   entity.rempartStacks = 0;
   entity.rempartExpiresAt = 0;
   entity.noteStacks = 0;
