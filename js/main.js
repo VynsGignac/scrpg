@@ -1436,10 +1436,6 @@ function updateAutoPlay(character) {
   for (const skillId of CLASS_SKILLS[character.className] || []) {
     if (AUTO_DEFENSIVE_SKILLS.has(skillId) && !recentlyHit) continue;
     const skill = SKILLS[skillId];
-    // Interrupteur (Zones du Druide, voir toggleField) : un simple flip, jamais géré par l'auto-
-    // jeu -- sans condition pour décider quand l'activer/désactiver, il basculerait au hasard
-    // (parfois pour l'éteindre juste après l'avoir allumé), donc réservé au contrôle manuel.
-    if (skill && skill.toggleField) continue;
     // Sort "au sol" (voir groundTargetSkill/targeting 'ground') : pas de visée manuelle possible
     // pour un personnage non sélectionné -- vise directement un allié (demande utilisateur
     // explicite : "sa zone cible est toujours un joueur allié"), le même que choisirait un soin
@@ -1904,27 +1900,31 @@ function healCharacter(target, amount, source, skillLabel) {
 // ------------------------------------------------------------------
 // Graines/plantes du Druide (refonte complète, demande utilisateur explicite -- voir
 // SKILLS.planterGraine/zoneDeSoin/zoneDeDegats/zoneDeVitesse) : une graine posée au sol (voir
-// groundTargetSkill) ne fait RIEN par elle-même -- elle accumule du soin reçu à proximité (voir
-// feedNearbySeeds, appelée depuis updateHotEffects à chaque tick de l'attaque de base du Druide)
-// jusqu'à SEED_GERMINATION_THRESHOLD, où elle devient une "plante" permanente (plus de
-// péremption). Une graine qui n'a pas assez reçu se fane après SEED_WITHER_MS. Une fois germée,
-// une plante applique, toutes les PLANT_EFFECT_TICK_MS, chaque zone actuellement activée par son
-// Druide (plantHealZone/plantDamageZone/plantSpeedZone, voir les 3 sorts interrupteurs) --
-// cumulables : une plante peut soigner ET endommager ET altérer la vitesse en même temps si les
-// 3 sont actives.
+// groundTargetSkill) ne fait RIEN par elle-même -- elle compte le nombre de TICS de soin sur la
+// durée reçus à proximité (pas un montant, demande utilisateur explicite -- voir feedNearbySeeds,
+// appelée depuis updateHotEffects à chaque tic de l'attaque de base du Druide) jusqu'à
+// SEED_GERMINATION_TICKS, où elle devient une "plante" permanente (plus de péremption). Une
+// graine qui n'a pas assez reçu se fane après SEED_WITHER_MS. Une fois germée, une plante ne fait
+// toujours rien PAR DÉFAUT -- ce sont les 3 sorts (zoneDeSoin/zoneDeDegats/zoneDeVitesse) qui,
+// au moment où on les lance, rendent TOUTES les plantes germées du Druide actives pour ce type de
+// zone pendant une petite durée (PLANT_ZONE_ACTIVE_DURATION_MS, voir leurs *Until sur le
+// personnage) -- cumulables : une plante peut soigner ET endommager ET altérer la vitesse en même
+// temps si les 3 fenêtres sont actives ensemble.
 // ------------------------------------------------------------------
 const groundSeeds = [];
 const SEED_RADIUS = 120;
 const SEED_WITHER_MS = 12000; // avant germination seulement -- une plante germée ne se fane plus
-const SEED_GERMINATION_THRESHOLD = 40; // soin cumulé reçu à proximité pour éclore
+const SEED_GERMINATION_TICKS = 5; // nombre de tics de HOT reçus à proximité pour éclore
 const PLANT_EFFECT_TICK_MS = 2000;
+const PLANT_ZONE_ACTIVE_DURATION_MS = 5000; // "une petite durée" (demande utilisateur explicite)
 const PLANT_HEAL_PER_TICK_SAVOIR = 0.2;
 const PLANT_HEAL_PER_TICK_INTELLIGENCE = 0.1;
 const PLANT_DAMAGE_PER_TICK_INTELLIGENCE = 0.25;
 const PLANT_SLOW_MULTIPLIER = 0.75; // ennemis ralentis
 const PLANT_HASTE_MULTIPLIER = 1.2; // alliés accélérés
-// Un peu plus long que le tick pour rester "continu" tant que la plante reste active (réutilise
-// slowMultiplier/slowUntil, voir aussi le Rythme entraînant du Barde -- générique dans les deux sens).
+// Un peu plus long que le tick pour rester "continu" tant que la fenêtre de vitesse reste active
+// (réutilise slowMultiplier/slowUntil, voir aussi le Rythme entraînant du Barde -- générique dans
+// les deux sens).
 const PLANT_SPEED_EFFECT_DURATION_MS = 2500;
 
 function spawnSeed(source, x, y) {
@@ -1932,14 +1932,15 @@ function spawnSeed(source, x, y) {
 }
 
 // Fait progresser vers la germination toute graine PAS ENCORE germée du même Druide dont le rayon
-// couvre (x, y) -- appelée à chaque tick de soin reçu par un allié (voir updateHotEffects), avec
-// le montant de ce soin comme progression.
-function feedNearbySeeds(source, x, y, amount) {
+// couvre (x, y) -- appelée à chaque TIC de soin sur la durée reçu par un allié (voir
+// updateHotEffects), +1 par tic peu importe son montant (demande utilisateur explicite : "un
+// nombre de tic du HoT", pas un montant de soin).
+function feedNearbySeeds(source, x, y) {
   for (const seed of groundSeeds) {
     if (seed.source !== source || seed.germinated) continue;
     if (Math.hypot(seed.x - x, seed.y - y) > SEED_RADIUS) continue;
-    seed.growth += amount;
-    if (seed.growth >= SEED_GERMINATION_THRESHOLD) seed.germinated = true;
+    seed.growth += 1;
+    if (seed.growth >= SEED_GERMINATION_TICKS) seed.germinated = true;
   }
 }
 
@@ -1948,7 +1949,7 @@ function updatePlantEffects(seed, now) {
   seed.nextEffectTickAt = now + PLANT_EFFECT_TICK_MS;
   const source = seed.source;
 
-  if (source.plantHealZone) {
+  if (now < (source.plantHealZoneUntil || 0)) {
     const heal = Math.round(source.stats.savoir * PLANT_HEAL_PER_TICK_SAVOIR + source.stats.intelligence * PLANT_HEAL_PER_TICK_INTELLIGENCE);
     for (const c of characters) {
       if (!c.playerControlled || c.hp <= 0) continue;
@@ -1956,7 +1957,7 @@ function updatePlantEffects(seed, now) {
       healCharacter(c, heal, source, 'Plante (zone de soin)');
     }
   }
-  if (source.plantDamageZone) {
+  if (now < (source.plantDamageZoneUntil || 0)) {
     const dmg = Math.round(source.stats.intelligence * PLANT_DAMAGE_PER_TICK_INTELLIGENCE);
     for (const enemy of enemies) {
       if (enemy.hp <= 0) continue;
@@ -1964,7 +1965,7 @@ function updatePlantEffects(seed, now) {
       dealDamage(enemy, dmg, '102, 187, 106', source, false, 'Plante (zone de dégâts)');
     }
   }
-  if (source.plantSpeedZone) {
+  if (now < (source.plantSpeedZoneUntil || 0)) {
     for (const c of characters) {
       if (c.hp <= 0) continue;
       if (Math.hypot(c.x - seed.x, c.y - seed.y) > SEED_RADIUS) continue;
@@ -1996,8 +1997,8 @@ function drawSeeds(now) {
       ctx.strokeStyle = 'rgba(102, 187, 106, 0.7)';
     } else {
       // Graine en germination : plus discrète, et son contour se remplit avec la progression
-      // (growth/SEED_GERMINATION_THRESHOLD) pour visualiser combien de soin il manque encore.
-      const progress = Math.min(1, seed.growth / SEED_GERMINATION_THRESHOLD);
+      // (growth/SEED_GERMINATION_TICKS) pour visualiser combien de tics il manque encore.
+      const progress = Math.min(1, seed.growth / SEED_GERMINATION_TICKS);
       ctx.fillStyle = `rgba(102, 187, 106, ${(0.04 + 0.06 * progress).toFixed(2)})`;
       ctx.strokeStyle = `rgba(102, 187, 106, ${(0.2 + 0.4 * progress).toFixed(2)})`;
     }
@@ -2040,7 +2041,7 @@ function updateDotEffects(character, now) {
 
 // Soin sur la durée (HOT) -- symétrique du DOT ci-dessus, pour l'attaque de base du Druide (demande
 // utilisateur explicite, voir updateCombat/healerOnly). Chaque tick soigné fait aussi germer les
-// graines du lanceur à proximité de la cible (voir feedNearbySeeds/SEED_GERMINATION_THRESHOLD).
+// graines du lanceur à proximité de la cible (voir feedNearbySeeds/SEED_GERMINATION_TICKS).
 function applyHot(target, spec) {
   if (!target.hotEffects) target.hotEffects = [];
   target.hotEffects.push({ ...spec, nextTickAt: performance.now() + spec.tickIntervalMs });
@@ -2052,7 +2053,7 @@ function updateHotEffects(character, now) {
     const hot = character.hotEffects[i];
     if (now >= hot.nextTickAt) {
       healCharacter(character, hot.healPerTick, hot.source, hot.skillName);
-      feedNearbySeeds(hot.source, character.x, character.y, hot.healPerTick);
+      feedNearbySeeds(hot.source, character.x, character.y);
       hot.ticksLeft -= 1;
       hot.nextTickAt = now + hot.tickIntervalMs;
     }
@@ -2570,41 +2571,43 @@ const SKILLS = {
   // de groupe) : le Druide est maintenant un "jardinier". Son attaque de base est un soin sur la
   // durée (voir healerOnly/applyHot dans updateCombat) qui, en plus de soigner, fait germer les
   // graines proches (voir feedNearbySeeds) -- une graine devient une "plante" permanente une fois
-  // assez de soin cumulé reçu à sa portée (SEED_GERMINATION_THRESHOLD). "Planter une graine" pose
-  // la graine (voir le mécanisme de visée au sol, groundTargetSkill) ; les 3 autres sorts sont des
-  // interrupteurs (pas de cible, pas d'effet direct au cast) qui activent/désactivent un type de
-  // zone pour TOUTES les plantes germées du Druide à la fois -- cumulables entre eux (voir
-  // updatePlantEffects).
+  // assez de TICS de ce soin reçus à sa portée (SEED_GERMINATION_TICKS, pas un montant : demande
+  // utilisateur explicite). "Planter une graine" pose la graine (voir le mécanisme de visée au
+  // sol, groundTargetSkill). Une plante germée ne fait toujours rien toute seule -- les 3 autres
+  // sorts rendent TOUTES les plantes du Druide actives pour un type de zone donné pendant
+  // PLANT_ZONE_ACTIVE_DURATION_MS à partir du moment où on les lance (effet immédiat, pas un
+  // interrupteur permanent : demande utilisateur explicite) -- cumulables entre eux (voir
+  // updatePlantEffects, qui vérifie juste si on est encore dans la fenêtre de chaque *Until).
   planterGraine: {
     id: 'planterGraine', name: 'Planter une graine', shortLabel: 'Planter\nune graine', targeting: 'ground', cooldownMs: 8000,
     groundRadius: SEED_RADIUS,
-    description: "Plante une graine au sol. Éclot en plante permanente si elle reçoit assez de soin à proximité.",
+    description: "Plante une graine au sol. Éclot en plante permanente après assez de tics de soin reçus à proximité.",
     cast(character, point) {
       spawnSeed(character, point.x, point.y);
     },
   },
   zoneDeSoin: {
-    id: 'zoneDeSoin', name: 'Zone de soin', shortLabel: 'Zone de\nsoin', targeting: 'self', cooldownMs: 3000,
-    toggleField: 'plantHealZone',
-    description: "Active/désactive : les plantes germées soignent les alliés proches toutes les 2s.",
+    id: 'zoneDeSoin', name: 'Zone de soin', shortLabel: 'Zone de\nsoin', targeting: 'self', cooldownMs: 10000,
+    activeField: 'plantHealZoneUntil',
+    description: "Pendant 5s, les plantes germées soignent les alliés proches toutes les 2s.",
     cast(character) {
-      character.plantHealZone = !character.plantHealZone;
+      character.plantHealZoneUntil = performance.now() + PLANT_ZONE_ACTIVE_DURATION_MS;
     },
   },
   zoneDeDegats: {
-    id: 'zoneDeDegats', name: 'Zone de dégâts', shortLabel: 'Zone de\ndégâts', targeting: 'self', cooldownMs: 3000,
-    toggleField: 'plantDamageZone',
-    description: "Active/désactive : les plantes germées endommagent les ennemis proches toutes les 2s.",
+    id: 'zoneDeDegats', name: 'Zone de dégâts', shortLabel: 'Zone de\ndégâts', targeting: 'self', cooldownMs: 10000,
+    activeField: 'plantDamageZoneUntil',
+    description: "Pendant 5s, les plantes germées endommagent les ennemis proches toutes les 2s.",
     cast(character) {
-      character.plantDamageZone = !character.plantDamageZone;
+      character.plantDamageZoneUntil = performance.now() + PLANT_ZONE_ACTIVE_DURATION_MS;
     },
   },
   zoneDeVitesse: {
-    id: 'zoneDeVitesse', name: 'Zone de vitesse', shortLabel: 'Zone de\nvitesse', targeting: 'self', cooldownMs: 3000,
-    toggleField: 'plantSpeedZone',
-    description: "Active/désactive : les plantes germées ralentissent les ennemis et accélèrent les alliés proches.",
+    id: 'zoneDeVitesse', name: 'Zone de vitesse', shortLabel: 'Zone de\nvitesse', targeting: 'self', cooldownMs: 10000,
+    activeField: 'plantSpeedZoneUntil',
+    description: "Pendant 5s, les plantes germées ralentissent les ennemis et accélèrent les alliés proches.",
     cast(character) {
-      character.plantSpeedZone = !character.plantSpeedZone;
+      character.plantSpeedZoneUntil = performance.now() + PLANT_ZONE_ACTIVE_DURATION_MS;
     },
   },
 
@@ -3887,9 +3890,9 @@ function activeStatusBadges(character, now) {
   if (character.pyroBurnStacks > 0) badges.push({ text: `Brûlure ${character.pyroBurnStacks}`, rgb: '255, 87, 34' });
   if (character.poisonStacks > 0) badges.push({ text: `Poison ${character.poisonStacks}`, rgb: '124, 179, 66' });
   if (character.noteStacks > 0) badges.push({ text: `Notes ${character.noteStacks}`, rgb: '38, 166, 154' });
-  if (character.plantHealZone) badges.push({ text: 'Zone soin', rgb: '102, 187, 106' });
-  if (character.plantDamageZone) badges.push({ text: 'Zone dégâts', rgb: '102, 187, 106' });
-  if (character.plantSpeedZone) badges.push({ text: 'Zone vitesse', rgb: '102, 187, 106' });
+  if ((character.plantHealZoneUntil || 0) > now) badges.push({ text: 'Zone soin', rgb: '102, 187, 106' });
+  if ((character.plantDamageZoneUntil || 0) > now) badges.push({ text: 'Zone dégâts', rgb: '102, 187, 106' });
+  if ((character.plantSpeedZoneUntil || 0) > now) badges.push({ text: 'Zone vitesse', rgb: '102, 187, 106' });
 
   if (character.shieldHp > 0 && (character.shieldExpiresAt || 0) > now) {
     badges.push({ text: `Bouclier ${character.shieldHp}`, rgb: '255, 213, 79' });
@@ -4451,10 +4454,10 @@ function drawSkillSlot(character, skill, slotX, slotY, slotSize, now) {
   const readyAt = (character.cooldowns && character.cooldowns[skill.id]) || 0;
   const remaining = locked ? skill.cooldownMs : Math.max(0, readyAt - now);
   const onCooldown = locked || remaining > 0;
-  // Sort "interrupteur" actif (Zones du Druide, voir toggleField) : fond distinct pour montrer
-  // que l'effet tourne en continu, indépendamment du cooldown (qui ne concerne ici que la
-  // fréquence à laquelle on peut re-basculer la case, pas une durée d'effet).
-  const toggledOn = skill.toggleField && character[skill.toggleField];
+  // Fenêtre d'activation en cours (Zones du Druide, voir activeField) : fond distinct pendant les
+  // quelques secondes où l'effet est vraiment actif sur les plantes -- indépendant du cooldown
+  // (qui lui ne concerne que la fréquence à laquelle on peut relancer le sort).
+  const toggledOn = skill.activeField && now < (character[skill.activeField] || 0);
 
   ctx.fillStyle = toggledOn ? '#66bb6a44' : '#ffffff20';
   ctx.fillRect(slotX, slotY, slotSize, slotSize);
@@ -5199,9 +5202,9 @@ function resetTransientCombatState(entity) {
   entity.attackTarget = null;
   entity.dotEffects = [];
   entity.hotEffects = [];
-  entity.plantHealZone = false;
-  entity.plantDamageZone = false;
-  entity.plantSpeedZone = false;
+  entity.plantHealZoneUntil = 0;
+  entity.plantDamageZoneUntil = 0;
+  entity.plantSpeedZoneUntil = 0;
   entity.isMoving = false;
   entity.pathPoints = [];
   entity.shieldHp = 0;
