@@ -596,7 +596,9 @@ const NOTE_DURATION_MS = 8000; // demande utilisateur explicite
 const NOTE_MAX_STACKS = 3; // demande utilisateur explicite
 // Durée des 3 buffs de zone du Barde qui consomment des Notes (vitesse/mitigation/dégâts, voir
 // SKILLS.rythmeEntrainant/refrainProtecteur/crescendo) -- le 4e (soin) est instantané, pas concerné.
-const BARD_BUFF_DURATION_MS = 6000;
+// Volontairement un peu plus longue que leur cooldown (2s, voir plus bas) pour rester "à peu près
+// continu" tant que le Barde entretient des Notes, sans pour autant survivre longtemps à un arrêt.
+const BARD_BUFF_DURATION_MS = 3000;
 
 // Pose/rafraîchit une Note sur "target" (jusqu'à NOTE_MAX_STACKS) -- un seul minuteur partagé par
 // les stacks (comme shieldExpiresAt) plutôt qu'un par stack : la pile entière expire ensemble
@@ -2731,24 +2733,27 @@ const SKILLS = {
   // de NOTE_DURATION_MS. Les 4 sorts ci-dessous sont tous des zones centrées sur lui (ZONE_RADIUS,
   // comme Cercle sacré/Totem) : ils consomment les Notes de tout allié proche qui en a, avec un
   // effet qui grandit avec le nombre de stacks consommées -- rien ne se passe pour qui n'a aucune
-  // Note. BARD_BUFF_DURATION_MS est la durée des 3 buffs (vitesse/mitigation/dégâts) ; le soin,
-  // lui, est instantané.
+  // Note. Cooldown volontairement très court (2s, demande utilisateur explicite : "un effet autour
+  // de lui toutes les 2 secondes") et effets réduits en conséquence -- la limitation du kit vient
+  // du nombre de Notes qu'il arrive à répartir sur le groupe, pas de l'attente entre deux sorts.
+  // BARD_BUFF_DURATION_MS est la durée des 3 buffs (vitesse/mitigation/dégâts) ; le soin, lui, est
+  // instantané.
   melodieApaisante: {
-    id: 'melodieApaisante', name: 'Mélodie apaisante', shortLabel: 'Mélodie\napaisante', targeting: 'self', cooldownMs: 10000,
-    description: "Soigne (18% Savoir par stack de Note) tous les alliés proches qui en ont, puis consomme leurs Notes.",
+    id: 'melodieApaisante', name: 'Mélodie apaisante', shortLabel: 'Mélodie\napaisante', targeting: 'self', cooldownMs: 2000,
+    description: "Soigne (5% Savoir par stack de Note) tous les alliés proches qui en ont, puis consomme leurs Notes.",
     cast(character) {
       for (const c of characters) {
         if (!c.playerControlled || c.hp <= 0 || !(c.noteStacks > 0)) continue;
         if (Math.hypot(c.x - character.x, c.y - character.y) > ZONE_RADIUS) continue;
-        const heal = Math.round(character.stats.savoir * 0.18 * c.noteStacks);
+        const heal = Math.round(character.stats.savoir * 0.05 * c.noteStacks);
         healCharacter(c, heal, character, 'Mélodie apaisante');
         c.noteStacks = 0;
       }
     },
   },
   rythmeEntrainant: {
-    id: 'rythmeEntrainant', name: 'Rythme entraînant', shortLabel: 'Rythme\nentraînant', targeting: 'self', cooldownMs: 12000,
-    description: "+15% vitesse de déplacement par stack de Note (6s) aux alliés proches qui en ont, puis consomme leurs Notes.",
+    id: 'rythmeEntrainant', name: 'Rythme entraînant', shortLabel: 'Rythme\nentraînant', targeting: 'self', cooldownMs: 2000,
+    description: "+2% vitesse de déplacement par stack de Note (3s) aux alliés proches qui en ont, puis consomme leurs Notes.",
     cast(character) {
       const now = performance.now();
       for (const c of characters) {
@@ -2757,35 +2762,35 @@ const SKILLS = {
         // Réutilise slowMultiplier/slowUntil (pensé pour les ralentissements, voir Éclat de
         // givre) avec un multiplicateur > 1 : générique, pas de raison de dupliquer le mécanisme
         // pour un bonus plutôt qu'un malus (voir aussi le badge dans activeStatusBadges).
-        c.slowMultiplier = 1 + 0.15 * c.noteStacks;
+        c.slowMultiplier = 1 + 0.02 * c.noteStacks;
         c.slowUntil = now + BARD_BUFF_DURATION_MS;
         c.noteStacks = 0;
       }
     },
   },
   refrainProtecteur: {
-    id: 'refrainProtecteur', name: 'Refrain protecteur', shortLabel: 'Refrain\nprotecteur', targeting: 'self', cooldownMs: 12000,
-    description: "-10% dégâts subis par stack de Note (6s) aux alliés proches qui en ont, puis consomme leurs Notes.",
+    id: 'refrainProtecteur', name: 'Refrain protecteur', shortLabel: 'Refrain\nprotecteur', targeting: 'self', cooldownMs: 2000,
+    description: "-2% dégâts subis par stack de Note (3s) aux alliés proches qui en ont, puis consomme leurs Notes.",
     cast(character) {
       const now = performance.now();
       for (const c of characters) {
         if (!c.playerControlled || c.hp <= 0 || !(c.noteStacks > 0)) continue;
         if (Math.hypot(c.x - character.x, c.y - character.y) > ZONE_RADIUS) continue;
-        c.damageReductionFactor = 0.1 * c.noteStacks;
+        c.damageReductionFactor = 0.02 * c.noteStacks;
         c.damageReductionUntil = now + BARD_BUFF_DURATION_MS;
         c.noteStacks = 0;
       }
     },
   },
   crescendo: {
-    id: 'crescendo', name: 'Crescendo', shortLabel: 'Crescendo', targeting: 'self', cooldownMs: 14000,
-    description: "+15% dégâts infligés par stack de Note (6s) aux alliés proches qui en ont, puis consomme leurs Notes.",
+    id: 'crescendo', name: 'Crescendo', shortLabel: 'Crescendo', targeting: 'self', cooldownMs: 2000,
+    description: "+2% dégâts infligés par stack de Note (3s) aux alliés proches qui en ont, puis consomme leurs Notes.",
     cast(character) {
       const now = performance.now();
       for (const c of characters) {
         if (!c.playerControlled || c.hp <= 0 || !(c.noteStacks > 0)) continue;
         if (Math.hypot(c.x - character.x, c.y - character.y) > ZONE_RADIUS) continue;
-        c.damageOutputMultiplier = 1 + 0.15 * c.noteStacks;
+        c.damageOutputMultiplier = 1 + 0.02 * c.noteStacks;
         c.damageOutputUntil = now + BARD_BUFF_DURATION_MS;
         c.noteStacks = 0;
       }
