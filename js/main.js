@@ -608,11 +608,16 @@ const BARD_ULTIME_ZONE_DURATION_MS = 12000;
 // booster le PROCHAIN sort lancé (character.pendingRuneBuff, lu et remis à 0 par chacun des 4
 // autres sorts du Prêtre).
 const RUNE_MAX_STACKS = 15;
-// Canalisation divine (voir SKILLS.canalisationDivine) : mana rendu à chaque attaque une fois le
-// passif actif, et durée de la fenêtre de réduction de cooldown (0.5s par attaque pendant cette
-// fenêtre) offerte par la consommation de runes -- proportionnelle au nombre de runes consommées.
+// ~10 runes accumulées toutes les 20s (cooldown de l'Ultime) au rythme d'une attaque de base
+// toutes les 2s -- doit alors faire environ x2,5 par rapport au sort de base (demande utilisateur
+// explicite) : (1 + RUNE_SCALING_PER_STACK * 10) = 2.5.
+const RUNE_SCALING_PER_STACK = 0.15;
+// Canalisation divine (voir SKILLS.canalisationDivine) : fenêtre temporaire (pas permanente,
+// demande utilisateur explicite), pendant laquelle chaque attaque rend du mana ET réduit les
+// cooldowns -- durée de base + un peu plus par rune consommée à l'activation.
 const PRIEST_MANA_RESTORE_PER_ATTACK = 5;
-const PRIEST_CD_REDUCE_MS_PER_RUNE = 3000;
+const PRIEST_CANALISATION_BASE_MS = 10000;
+const PRIEST_CANALISATION_MS_PER_RUNE = 500;
 const PRIEST_CD_REDUCE_PER_ATTACK_MS = 500;
 
 // Pose/rafraîchit une Note sur "target" (jusqu'à NOTE_MAX_STACKS) -- un seul minuteur partagé par
@@ -1545,15 +1550,16 @@ function updateCombat(character, now) {
     });
   } else if (healerOnly && character.className === 'Prêtre') {
     // Heal classique (demande utilisateur explicite : "plus orienté vers le heal pure et brut"),
-    // mais génère une Rune à chaque coup (voir RUNE_MAX_STACKS/SKILLS.ultimePretre) et, une fois
-    // Canalisation divine active, rend du mana des deux côtés -- avec en plus une réduction de
-    // cooldown si la fenêtre offerte par la consommation de runes est encore active.
+    // mais génère une Rune à chaque coup (voir RUNE_MAX_STACKS/SKILLS.ultimePretre) et, tant que
+    // la fenêtre de Canalisation divine est active, rend du mana des deux côtés ET réduit les
+    // cooldowns -- les deux ensemble, plus la fenêtre n'est plus permanente (demande utilisateur
+    // explicite).
     healCharacter(target, amount, character);
     character.runeStacks = Math.min(RUNE_MAX_STACKS, (character.runeStacks || 0) + 1);
-    if (character.priestManaPassive) {
+    if (now < (character.priestCanalisationUntil || 0)) {
       target.mana = Math.min(target.manaMax, (target.mana || 0) + PRIEST_MANA_RESTORE_PER_ATTACK);
       character.mana = Math.min(character.manaMax, (character.mana || 0) + PRIEST_MANA_RESTORE_PER_ATTACK);
-      if (now < (character.priestCdReduceUntil || 0) && character.cooldowns) {
+      if (character.cooldowns) {
         for (const key in character.cooldowns) {
           character.cooldowns[key] = Math.max(now, character.cooldowns[key] - PRIEST_CD_REDUCE_PER_ATTACK_MS);
         }
@@ -2673,8 +2679,10 @@ const SKILLS = {
     cast(character) {
       const runesUsed = character.pendingRuneBuff || 0;
       character.pendingRuneBuff = 0;
-      const radius = ZONE_RADIUS * (1 + 0.1 * runesUsed);
-      const heal = Math.round((character.stats.savoir * 0.25 + character.stats.intelligence * 0.1) * (1 + 0.15 * runesUsed));
+      // RUNE_SCALING_PER_STACK (demande utilisateur explicite : ~10 runes en 20s -> environ x2,5
+      // par rapport au sort de base) -- même taux pour le rayon que pour la puissance.
+      const radius = ZONE_RADIUS * (1 + RUNE_SCALING_PER_STACK * runesUsed);
+      const heal = Math.round((character.stats.savoir * 0.25 + character.stats.intelligence * 0.1) * (1 + RUNE_SCALING_PER_STACK * runesUsed));
       for (const c of characters) {
         if (!c.playerControlled || c.hp <= 0) continue;
         if (Math.hypot(c.x - character.x, c.y - character.y) > radius) continue;
@@ -2684,12 +2692,15 @@ const SKILLS = {
   },
   bouclierSacre: {
     id: 'bouclierSacre', name: 'Bouclier sacré', shortLabel: 'Bouclier\nsacré', targeting: 'ally', cooldownMs: 10000,
-    description: "Bouclier sur l'allié le plus faible. Les runes consommées l'augmentent et ajoutent un renvoi de dégâts.",
+    description: "Bouclier sur la cible actuelle. Les runes consommées l'augmentent et ajoutent un renvoi de dégâts.",
     cast(character) {
       const runesUsed = character.pendingRuneBuff || 0;
       character.pendingRuneBuff = 0;
-      const target = lowestHpAlly() || character;
-      const shield = Math.round((15 + character.stats.savoir * 0.9) * (1 + 0.15 * runesUsed));
+      // Cible actuelle du Prêtre (demande utilisateur explicite, pas l'allié le plus faible) --
+      // repli sur lowestHpAlly si rien n'est encore ciblé.
+      const currentTarget = character.attackTarget;
+      const target = (currentTarget && currentTarget.playerControlled && currentTarget.hp > 0) ? currentTarget : (lowestHpAlly() || character);
+      const shield = Math.round((15 + character.stats.savoir * 0.9) * (1 + RUNE_SCALING_PER_STACK * runesUsed));
       target.shieldHp = shield;
       target.shieldMax = shield;
       target.shieldExpiresAt = performance.now() + 6000;
@@ -2707,14 +2718,11 @@ const SKILLS = {
   },
   canalisationDivine: {
     id: 'canalisationDivine', name: 'Canalisation divine', shortLabel: 'Canalisation\ndivine', targeting: 'self', cooldownMs: 8000,
-    description: "Passif permanent : chaque attaque restaure du mana à la cible et au Prêtre. Les runes consommées ajoutent -0.5s de cd par attaque, pendant une durée proportionnelle aux runes.",
+    description: "Pendant 10s (+0.5s par rune consommée) : chaque attaque restaure du mana à la cible et au Prêtre, et réduit ses cooldowns de 0.5s.",
     cast(character) {
-      character.priestManaPassive = true;
       const runesUsed = character.pendingRuneBuff || 0;
       character.pendingRuneBuff = 0;
-      if (runesUsed > 0) {
-        character.priestCdReduceUntil = performance.now() + runesUsed * PRIEST_CD_REDUCE_MS_PER_RUNE;
-      }
+      character.priestCanalisationUntil = performance.now() + PRIEST_CANALISATION_BASE_MS + runesUsed * PRIEST_CANALISATION_MS_PER_RUNE;
     },
   },
   resurrection: {
@@ -3969,8 +3977,7 @@ function activeStatusBadges(character, now) {
 
   if (character.rage > 0) badges.push({ text: `Rage ${character.rage}`, rgb: '158, 158, 158' });
   if (character.runeStacks > 0) badges.push({ text: `Runes ${character.runeStacks}`, rgb: '255, 213, 79' });
-  if (character.priestManaPassive) badges.push({ text: 'Canalisation', rgb: '255, 213, 79' });
-  if ((character.priestCdReduceUntil || 0) > now) badges.push({ text: 'Réduc. cd/attaque', rgb: '255, 213, 79' });
+  if ((character.priestCanalisationUntil || 0) > now) badges.push({ text: 'Canalisation', rgb: '255, 213, 79' });
   if (character.rempartStacks > 0) badges.push({ text: `Rempart ${character.rempartStacks}`, rgb: '84, 110, 122' });
   if (character.pyroBurnStacks > 0) badges.push({ text: `Brûlure ${character.pyroBurnStacks}`, rgb: '255, 87, 34' });
   if (character.poisonStacks > 0) badges.push({ text: `Poison ${character.poisonStacks}`, rgb: '124, 179, 66' });
@@ -5326,8 +5333,7 @@ function resetTransientCombatState(entity) {
   entity.pyroBurnNextTickAt = 0;
   entity.runeStacks = 0;
   entity.pendingRuneBuff = 0;
-  entity.priestManaPassive = false;
-  entity.priestCdReduceUntil = 0;
+  entity.priestCanalisationUntil = 0;
   entity.shieldReflectMultiplier = 1;
   entity.rempartStacks = 0;
   entity.rempartExpiresAt = 0;
