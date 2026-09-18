@@ -140,7 +140,7 @@ const FIRST_NAMES = [
 // personnages du groupe tirent leur classe au hasard parmi elles toutes.
 const CHARACTER_CLASSES = [
   'Guerrier', 'Barbare', 'Paladin', 'Voleur', 'Mage', 'Pyromane',
-  'Chasseur', 'Druide', 'Prêtre', 'Sorcier', 'Chaman', 'Gardien',
+  'Chasseur', 'Druide', 'Prêtre', 'Sorcier', 'Chaman', 'Gardien', 'Barde',
 ];
 
 // Couleur de chaque classe (demande utilisateur explicite) -- le carré du personnage prend
@@ -160,6 +160,7 @@ const CLASS_COLORS = {
   Sorcier: '#3a3a3a',
   Chaman: '#ec407a',
   Gardien: '#546e7a',
+  Barde: '#26a69a',
 };
 
 const SKILL_MAX = 10;
@@ -208,6 +209,11 @@ const CLASS_STATS = {
   // grâce à sa réduction de dégâts. Agilité un peu plus haute que la moyenne (double couche de
   // survie : esquive/crit en plus de la mitigation active).
   Gardien: { force: 16, agilite: 16, endurance: 8, intelligence: 0, savoir: 0 },
+  // Barde : tout son kit (voir SKILLS/CLASS_SKILLS) ne dépend que du Savoir (le soin de zone) ou
+  // du nombre de stacks de Note (les 3 autres sorts, dégâts/vitesse/réduction fixes par stack,
+  // comme la Rage du Guerrier -- pas de scaling par stat pour ceux-là) -- Force/Intelligence/
+  // Agilité totalement hors sujet, mises à 0 plutôt que réparties pour rien.
+  Barde: { force: 0, agilite: 0, endurance: 6, intelligence: 0, savoir: 34 },
 };
 
 function statsForClass(className) {
@@ -548,6 +554,10 @@ const CLASS_COMBAT = {
   Sorcier: { melee: false, stat: 'intelligence' },
   Chaman: { melee: true, stat: 'intelligence' }, // magie au corps à corps
   Gardien: { melee: true, stat: 'force' },
+  // Barde : "stat" n'est en réalité jamais utilisé (voir appliesNotes/updateCombat -- son attaque
+  // de base pose une Note plutôt que d'infliger des dégâts), gardé juste pour la cohérence de la
+  // table.
+  Barde: { melee: false, stat: 'savoir' },
 };
 const DEFAULT_COMBAT = { melee: true, stat: 'force' };
 // Portée par défaut des classes à distance -- certaines classes ont leur propre valeur (voir
@@ -563,6 +573,45 @@ const ATTACK_INTERVAL_MS = 2000;
 const HEALER_ONLY_CLASSES = new Set(['Druide', 'Prêtre']);
 function isHealerOnly(character) {
   return HEALER_ONLY_CLASSES.has(character.className);
+}
+
+// Barde (demande utilisateur explicite) : comme les soigneurs purs ci-dessus, ne cible jamais un
+// ennemi -- son attaque de base pose une "Note" sur l'allié ciblé au lieu de lui infliger des
+// dégâts ou de le soigner (voir applyNote/updateCombat). Les Notes ne font RIEN par elles-mêmes :
+// seuls les 4 sorts actifs du Barde (zone centrée sur lui, voir SKILLS) en consomment l'effet.
+const NOTE_CLASSES = new Set(['Barde']);
+function appliesNotes(character) {
+  return NOTE_CLASSES.has(character.className);
+}
+
+// Regroupe soigneurs purs ET Barde : les deux ne ciblent jamais un ennemi, que ce soit au tap/drag
+// manuel (voir pointerdown/pointerup, hitTestCharacter à la place de hitTestEnemyAt) ou en
+// acquisition automatique de cible (voir updateCombat/updateAutoPlay, lowestHpAlly à la place de
+// nearestEnemyTo) -- seul l'EFFET de leur attaque de base diffère entre les deux (soin vs Note).
+function targetsAlliesOnly(character) {
+  return isHealerOnly(character) || appliesNotes(character);
+}
+
+const NOTE_DURATION_MS = 8000; // demande utilisateur explicite
+const NOTE_MAX_STACKS = 3; // demande utilisateur explicite
+// Durée des 3 buffs de zone du Barde qui consomment des Notes (vitesse/mitigation/dégâts, voir
+// SKILLS.rythmeEntrainant/refrainProtecteur/crescendo) -- le 4e (soin) est instantané, pas concerné.
+const BARD_BUFF_DURATION_MS = 6000;
+
+// Pose/rafraîchit une Note sur "target" (jusqu'à NOTE_MAX_STACKS) -- un seul minuteur partagé par
+// les stacks (comme shieldExpiresAt) plutôt qu'un par stack : la pile entière expire ensemble
+// NOTE_DURATION_MS après la DERNIÈRE Note posée, elle ne "fond" pas stack par stack.
+function applyNote(target) {
+  target.noteStacks = Math.min(NOTE_MAX_STACKS, (target.noteStacks || 0) + 1);
+  target.noteExpiresAt = performance.now() + NOTE_DURATION_MS;
+}
+
+// Expire la pile de Notes une fois NOTE_DURATION_MS écoulées sans nouvelle Note -- appelée chaque
+// image pour tout le monde (voir loop()), comme updateShield.
+function updateNotes(character, now) {
+  if (character.noteStacks > 0 && now >= (character.noteExpiresAt || 0)) {
+    character.noteStacks = 0;
+  }
 }
 
 // ------------------------------------------------------------
@@ -1364,9 +1413,9 @@ function updateAutoPlay(character) {
   // la bombe était "ignoré" après coup (demande utilisateur explicite).
   const currentTarget = character.attackTarget;
   const currentTargetValid = currentTarget && currentTarget.hp > 0 && !currentTarget.explodedAt && !currentTarget.destroyedAt;
-  // Soigneur pur (Druide/Prêtre, voir isHealerOnly) : cherche un allié à soigner plutôt qu'un
-  // ennemi à attaquer.
-  const target = currentTargetValid ? currentTarget : (isHealerOnly(character) ? lowestHpAlly() : nearestEnemyTo(character));
+  // Soigneur pur ou Barde (voir targetsAlliesOnly) : cherche un allié à soigner/à poser une Note
+  // dessus plutôt qu'un ennemi à attaquer.
+  const target = currentTargetValid ? currentTarget : (targetsAlliesOnly(character) ? lowestHpAlly() : nearestEnemyTo(character));
   if (!target) return;
 
   // Nouvel engagement, ou cible déjà fixée mais hors de portée après être arrivé (elle a bougé
@@ -1402,10 +1451,12 @@ function updateAutoPlay(character) {
 function updateCombat(character, now) {
   if (character.hp <= 0) return; // mort : ne peut plus attaquer
 
-  // Soigneur pur (Druide/Prêtre, voir isHealerOnly) : cherche un allié à soigner au lieu d'un
-  // ennemi à attaquer, pour l'acquisition automatique de cible ci-dessous comme pour la
-  // résolution de l'attaque tout en bas.
+  // Soigneur pur ou Barde (voir targetsAlliesOnly) : cherche un allié à soigner/à poser une Note
+  // dessus au lieu d'un ennemi à attaquer, pour l'acquisition automatique de cible ci-dessous
+  // comme pour la résolution de l'attaque tout en bas.
+  const allyOnly = character.playerControlled && targetsAlliesOnly(character);
   const healerOnly = character.playerControlled && isHealerOnly(character);
+  const bard = character.playerControlled && appliesNotes(character);
 
   // Riposte passive, sans déplacement : un personnage du joueur sans cible qui a déjà un ennemi
   // à portée l'attaque sans qu'un ordre explicite soit nécessaire -- qu'il soit sélectionné ou
@@ -1415,7 +1466,7 @@ function updateCombat(character, now) {
   // 'active' : avant le pull et pendant le compte à rebours, seule une attaque manuelle du
   // joueur (voir orderAttack/castSkill) peut faire agir un personnage.
   if (character.playerControlled && !character.attackTarget && combatPhase === 'active') {
-    const candidate = healerOnly ? lowestHpAlly() : nearestEnemyTo(character);
+    const candidate = allyOnly ? lowestHpAlly() : nearestEnemyTo(character);
     if (candidate && isInRangeOf(character, candidate)) character.attackTarget = candidate;
   }
 
@@ -1446,6 +1497,12 @@ function updateCombat(character, now) {
   if (now - (character.lastAttackAt || 0) < effectiveAttackInterval) return;
 
   character.lastAttackAt = now;
+  // Barde (demande utilisateur explicite) : pose une Note sur l'allié ciblé au lieu de lui
+  // infliger des dégâts ou de le soigner -- pas de stat/crit impliqué, voir applyNote.
+  if (bard) {
+    applyNote(target);
+    return;
+  }
   const combat = combatProfile(character);
   // Attaque de base = 100% de la stat (Force, ou Intelligence pour les lanceurs de sorts). Pour
   // un soigneur pur (demande utilisateur explicite), ce même montant soigne la cible (un allié,
@@ -2667,6 +2724,73 @@ const SKILLS = {
       dealDamage(target, amount, '84, 110, 122', character, crit, 'Représailles');
     },
   },
+
+  // ============================== BARDE (Savoir, distance) ==============================
+  // Son attaque de base ne fait pas de dégâts ni de soin : elle pose une Note sur l'allié ciblé
+  // (voir appliesNotes/applyNote dans updateCombat), jusqu'à NOTE_MAX_STACKS, qui expire au bout
+  // de NOTE_DURATION_MS. Les 4 sorts ci-dessous sont tous des zones centrées sur lui (ZONE_RADIUS,
+  // comme Cercle sacré/Totem) : ils consomment les Notes de tout allié proche qui en a, avec un
+  // effet qui grandit avec le nombre de stacks consommées -- rien ne se passe pour qui n'a aucune
+  // Note. BARD_BUFF_DURATION_MS est la durée des 3 buffs (vitesse/mitigation/dégâts) ; le soin,
+  // lui, est instantané.
+  melodieApaisante: {
+    id: 'melodieApaisante', name: 'Mélodie apaisante', shortLabel: 'Mélodie\napaisante', targeting: 'self', cooldownMs: 10000,
+    description: "Soigne (18% Savoir par stack de Note) tous les alliés proches qui en ont, puis consomme leurs Notes.",
+    cast(character) {
+      for (const c of characters) {
+        if (!c.playerControlled || c.hp <= 0 || !(c.noteStacks > 0)) continue;
+        if (Math.hypot(c.x - character.x, c.y - character.y) > ZONE_RADIUS) continue;
+        const heal = Math.round(character.stats.savoir * 0.18 * c.noteStacks);
+        healCharacter(c, heal, character, 'Mélodie apaisante');
+        c.noteStacks = 0;
+      }
+    },
+  },
+  rythmeEntrainant: {
+    id: 'rythmeEntrainant', name: 'Rythme entraînant', shortLabel: 'Rythme\nentraînant', targeting: 'self', cooldownMs: 12000,
+    description: "+15% vitesse de déplacement par stack de Note (6s) aux alliés proches qui en ont, puis consomme leurs Notes.",
+    cast(character) {
+      const now = performance.now();
+      for (const c of characters) {
+        if (!c.playerControlled || c.hp <= 0 || !(c.noteStacks > 0)) continue;
+        if (Math.hypot(c.x - character.x, c.y - character.y) > ZONE_RADIUS) continue;
+        // Réutilise slowMultiplier/slowUntil (pensé pour les ralentissements, voir Éclat de
+        // givre) avec un multiplicateur > 1 : générique, pas de raison de dupliquer le mécanisme
+        // pour un bonus plutôt qu'un malus (voir aussi le badge dans activeStatusBadges).
+        c.slowMultiplier = 1 + 0.15 * c.noteStacks;
+        c.slowUntil = now + BARD_BUFF_DURATION_MS;
+        c.noteStacks = 0;
+      }
+    },
+  },
+  refrainProtecteur: {
+    id: 'refrainProtecteur', name: 'Refrain protecteur', shortLabel: 'Refrain\nprotecteur', targeting: 'self', cooldownMs: 12000,
+    description: "-10% dégâts subis par stack de Note (6s) aux alliés proches qui en ont, puis consomme leurs Notes.",
+    cast(character) {
+      const now = performance.now();
+      for (const c of characters) {
+        if (!c.playerControlled || c.hp <= 0 || !(c.noteStacks > 0)) continue;
+        if (Math.hypot(c.x - character.x, c.y - character.y) > ZONE_RADIUS) continue;
+        c.damageReductionFactor = 0.1 * c.noteStacks;
+        c.damageReductionUntil = now + BARD_BUFF_DURATION_MS;
+        c.noteStacks = 0;
+      }
+    },
+  },
+  crescendo: {
+    id: 'crescendo', name: 'Crescendo', shortLabel: 'Crescendo', targeting: 'self', cooldownMs: 14000,
+    description: "+15% dégâts infligés par stack de Note (6s) aux alliés proches qui en ont, puis consomme leurs Notes.",
+    cast(character) {
+      const now = performance.now();
+      for (const c of characters) {
+        if (!c.playerControlled || c.hp <= 0 || !(c.noteStacks > 0)) continue;
+        if (Math.hypot(c.x - character.x, c.y - character.y) > ZONE_RADIUS) continue;
+        c.damageOutputMultiplier = 1 + 0.15 * c.noteStacks;
+        c.damageOutputUntil = now + BARD_BUFF_DURATION_MS;
+        c.noteStacks = 0;
+      }
+    },
+  },
 };
 
 const CLASS_SKILLS = {
@@ -2682,6 +2806,7 @@ const CLASS_SKILLS = {
   Sorcier: ['drainDeVie', 'epidemie', 'pacteDeProtection', 'malediction'],
   Chaman: ['frappeDesEsprits', 'chaineDEclairs', 'boucliersDesAncetres', 'totem'],
   Gardien: ['coupDeBouclier', 'rempart', 'criDeDefi', 'represailles'],
+  Barde: ['melodieApaisante', 'rythmeEntrainant', 'refrainProtecteur', 'crescendo'],
 };
 
 // Même critère de "à portée" que l'attaque de base (voir updateCombat) : corps à corps = juste à
@@ -3199,9 +3324,9 @@ canvas.addEventListener('pointermove', (event) => {
   // déplacement habituel -- sans ça, resolveDestination repousse toujours l'aperçu en dehors de
   // l'ennemi, donnant l'impression à tort qu'on ne peut pas viser dessus. Avant le pull, aucune
   // attaque n'est possible : jamais de mise en avant de cible, juste l'aperçu de déplacement.
-  // Druide/Prêtre (voir isHealerOnly) ne ciblent plus d'ennemis : c'est un allié survolé qui
-  // indique leur cible de soin à la place.
-  if (isHealerOnly(activeTarget)) {
+  // Soigneurs purs/Barde (voir targetsAlliesOnly) ne ciblent plus d'ennemis : c'est un allié
+  // survolé qui indique leur cible (de soin, ou de Note pour le Barde) à la place.
+  if (targetsAlliesOnly(activeTarget)) {
     dragTargetEnemy = null;
     dragTargetAlly = combatPhase === 'prePull' ? null : hitTestCharacter(x, y);
     if (dragTargetAlly === activeTarget) dragTargetAlly = null;
@@ -3277,9 +3402,10 @@ canvas.addEventListener('pointerup', (event) => {
       activeTarget.selected = true;
 
       // Terminer le drag SUR un ennemi = ordre d'attaque plutôt qu'un simple déplacement --
-      // sauf avant le pull, où aucune attaque n'est permise (voir combatPhase). Druide/Prêtre
-      // (isHealerOnly) ne ciblent plus d'ennemis : terminer sur un allié est un ordre de soin.
-      if (isHealerOnly(activeTarget)) {
+      // sauf avant le pull, où aucune attaque n'est permise (voir combatPhase). Soigneurs purs/
+      // Barde (targetsAlliesOnly) ne ciblent plus d'ennemis : terminer sur un allié est un ordre
+      // de soin (ou de Note pour le Barde).
+      if (targetsAlliesOnly(activeTarget)) {
         const targetAlly = combatPhase === 'prePull' ? null : hitTestCharacter(x, y);
         if (targetAlly && targetAlly !== activeTarget) {
           orderAttack(activeTarget, targetAlly);
@@ -3569,6 +3695,7 @@ function activeStatusBadges(character, now) {
   if (character.rempartStacks > 0) badges.push({ text: `Rempart ${character.rempartStacks}`, rgb: '84, 110, 122' });
   if (character.pyroBurnStacks > 0) badges.push({ text: `Brûlure ${character.pyroBurnStacks}`, rgb: '255, 87, 34' });
   if (character.poisonStacks > 0) badges.push({ text: `Poison ${character.poisonStacks}`, rgb: '124, 179, 66' });
+  if (character.noteStacks > 0) badges.push({ text: `Notes ${character.noteStacks}`, rgb: '38, 166, 154' });
 
   if (character.shieldHp > 0 && (character.shieldExpiresAt || 0) > now) {
     badges.push({ text: `Bouclier ${character.shieldHp}`, rgb: '255, 213, 79' });
@@ -3585,7 +3712,14 @@ function activeStatusBadges(character, now) {
     badges.push({ text: `+${Math.round(character.damageTakenBonusFactor * 100)}% subis`, rgb: '239, 83, 80' });
   }
   if ((character.dodgeUntil || 0) > now) badges.push({ text: 'Esquive', rgb: '186, 104, 200' });
-  if ((character.slowUntil || 0) > now) badges.push({ text: 'Ralenti', rgb: '79, 195, 247' });
+  if ((character.slowUntil || 0) > now) {
+    // Champ historiquement pensé pour les ralentissements (multiplicateur < 1), réutilisé tel
+    // quel par le Barde (voir SKILLS.rythmeEntrainant) pour un bonus de vitesse (> 1) -- badge
+    // différent selon le sens plutôt que toujours "Ralenti", qui serait faux pour un bonus.
+    const speedMult = character.slowMultiplier || 1;
+    if (speedMult < 1) badges.push({ text: 'Ralenti', rgb: '79, 195, 247' });
+    else if (speedMult > 1) badges.push({ text: `+${Math.round((speedMult - 1) * 100)}% vitesse`, rgb: '38, 166, 154' });
+  }
   if ((character.stunnedUntil || 0) > now) badges.push({ text: 'Étourdi', rgb: '129, 212, 250' });
   if ((character.tauntUntil || 0) > now) badges.push({ text: 'Provoqué', rgb: '255, 193, 7' });
   if ((character.huntersMarkUntil || 0) > now) badges.push({ text: 'Marqué', rgb: '139, 195, 74' });
@@ -4886,6 +5020,8 @@ function resetTransientCombatState(entity) {
   entity.priestGraceStacks = 0;
   entity.rempartStacks = 0;
   entity.rempartExpiresAt = 0;
+  entity.noteStacks = 0;
+  entity.noteExpiresAt = 0;
   entity.nextBombAt = 0;
   entity.bombDashTarget = null;
   entity.bombDashUntil = 0;
@@ -5786,6 +5922,7 @@ function loop(now) {
       updatePyroBurn(character, now);
       updateRempartStacks(character, now);
       updateShield(character, now);
+      updateNotes(character, now);
       updateManaRegen(character, dt);
     }
     updateBombs(now);
