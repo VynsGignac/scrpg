@@ -599,6 +599,9 @@ const NOTE_MAX_STACKS = 3; // demande utilisateur explicite
 // Volontairement un peu plus longue que leur cooldown (2s, voir plus bas) pour rester "à peu près
 // continu" tant que le Barde entretient des Notes, sans pour autant survivre longtemps à un arrêt.
 const BARD_BUFF_DURATION_MS = 3000;
+// Durée de la portée doublée offerte par l'Ultime du Barde (demande utilisateur explicite :
+// temporaire, pas définitif) -- voir SKILLS.ultimeBarde/bardZoneRadiusUntil.
+const BARD_ULTIME_ZONE_DURATION_MS = 12000;
 
 // Pose/rafraîchit une Note sur "target" (jusqu'à NOTE_MAX_STACKS) -- un seul minuteur partagé par
 // les stacks (comme shieldExpiresAt) plutôt qu'un par stack : la pile entière expire ensemble
@@ -2903,7 +2906,8 @@ const SKILLS = {
     id: 'melodieApaisante', name: 'Mélodie apaisante', shortLabel: 'Mélodie\napaisante', targeting: 'self', cooldownMs: 2000,
     description: "Soigne (5% Savoir par stack de Note) tous les alliés proches qui en ont, puis consomme leurs Notes.",
     cast(character) {
-      const radius = ZONE_RADIUS * (character.bardZoneRadiusMultiplier || 1);
+      const now = performance.now();
+      const radius = ZONE_RADIUS * (now < (character.bardZoneRadiusUntil || 0) ? 2 : 1);
       for (const c of characters) {
         if (!c.playerControlled || c.hp <= 0 || !(c.noteStacks > 0)) continue;
         if (Math.hypot(c.x - character.x, c.y - character.y) > radius) continue;
@@ -2918,7 +2922,7 @@ const SKILLS = {
     description: "+2% vitesse de déplacement par stack de Note (3s) aux alliés proches qui en ont, puis consomme leurs Notes.",
     cast(character) {
       const now = performance.now();
-      const radius = ZONE_RADIUS * (character.bardZoneRadiusMultiplier || 1);
+      const radius = ZONE_RADIUS * (now < (character.bardZoneRadiusUntil || 0) ? 2 : 1);
       for (const c of characters) {
         if (!c.playerControlled || c.hp <= 0 || !(c.noteStacks > 0)) continue;
         if (Math.hypot(c.x - character.x, c.y - character.y) > radius) continue;
@@ -2936,7 +2940,7 @@ const SKILLS = {
     description: "-2% dégâts subis par stack de Note (3s) aux alliés proches qui en ont, puis consomme leurs Notes.",
     cast(character) {
       const now = performance.now();
-      const radius = ZONE_RADIUS * (character.bardZoneRadiusMultiplier || 1);
+      const radius = ZONE_RADIUS * (now < (character.bardZoneRadiusUntil || 0) ? 2 : 1);
       for (const c of characters) {
         if (!c.playerControlled || c.hp <= 0 || !(c.noteStacks > 0)) continue;
         if (Math.hypot(c.x - character.x, c.y - character.y) > radius) continue;
@@ -2951,7 +2955,7 @@ const SKILLS = {
     description: "+2% dégâts infligés par stack de Note (3s) aux alliés proches qui en ont, puis consomme leurs Notes.",
     cast(character) {
       const now = performance.now();
-      const radius = ZONE_RADIUS * (character.bardZoneRadiusMultiplier || 1);
+      const radius = ZONE_RADIUS * (now < (character.bardZoneRadiusUntil || 0) ? 2 : 1);
       for (const c of characters) {
         if (!c.playerControlled || c.hp <= 0 || !(c.noteStacks > 0)) continue;
         if (Math.hypot(c.x - character.x, c.y - character.y) > radius) continue;
@@ -2961,9 +2965,13 @@ const SKILLS = {
       }
     },
   },
+  // "Ultime" ici ne désigne pas un nom propre mais une catégorie de sort (plus puissant, moins
+  // fréquent, demande utilisateur explicite) -- même chose pour ultimeDruide. Les deux garderont
+  // un nom propre distinct plus tard ("on verra plus tard"), pour l'instant tous les deux affichent
+  // juste "Ultime".
   ultimeBarde: {
     id: 'ultimeBarde', name: 'Ultime', shortLabel: 'Ultime', targeting: 'self', cooldownMs: 60000,
-    description: "Donne à chaque allié la somme des Notes de tout le groupe, et double la portée des zones du Barde pour le reste du combat.",
+    description: "Donne à chaque allié la somme des Notes de tout le groupe, et double la portée des zones du Barde pendant 12s.",
     cast(character) {
       const now = performance.now();
       const allies = characters.filter((c) => c.playerControlled && c.hp > 0);
@@ -2973,7 +2981,7 @@ const SKILLS = {
         c.noteStacks = total;
         c.noteExpiresAt = now + NOTE_DURATION_MS;
       }
-      character.bardZoneRadiusMultiplier = 2;
+      character.bardZoneRadiusUntil = now + BARD_ULTIME_ZONE_DURATION_MS;
     },
   },
 };
@@ -3928,6 +3936,7 @@ function activeStatusBadges(character, now) {
   if ((character.plantHealZoneUntil || 0) > now) badges.push({ text: 'Zone soin', rgb: '102, 187, 106' });
   if ((character.plantDamageZoneUntil || 0) > now) badges.push({ text: 'Zone dégâts', rgb: '102, 187, 106' });
   if ((character.plantSpeedZoneUntil || 0) > now) badges.push({ text: 'Zone vitesse', rgb: '102, 187, 106' });
+  if ((character.bardZoneRadiusUntil || 0) > now) badges.push({ text: 'Portée x2', rgb: '38, 166, 154' });
 
   if (character.shieldHp > 0 && (character.shieldExpiresAt || 0) > now) {
     badges.push({ text: `Bouclier ${character.shieldHp}`, rgb: '255, 213, 79' });
@@ -5240,7 +5249,7 @@ function resetTransientCombatState(entity) {
   entity.plantHealZoneUntil = 0;
   entity.plantDamageZoneUntil = 0;
   entity.plantSpeedZoneUntil = 0;
-  entity.bardZoneRadiusMultiplier = 1;
+  entity.bardZoneRadiusUntil = 0;
   entity.isMoving = false;
   entity.pathPoints = [];
   entity.shieldHp = 0;
