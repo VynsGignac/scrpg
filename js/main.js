@@ -3832,6 +3832,22 @@ function drawArtificierProximityZone(enemy) {
   ctx.restore();
 }
 
+// Rayon d'effet des 4 sorts de zone du Barde (demande utilisateur explicite : le tracer quand il
+// est sélectionné, pour savoir qui sera touché avant de lancer) -- même rayon que ce que ces sorts
+// vérifient réellement (voir SKILLS.melodieApaisante etc.), doublé tant que la fenêtre de l'Ultime
+// (bardZoneRadiusUntil) est active, même code que dans leurs cast().
+function drawBardZonePreview(character, now) {
+  const radius = ZONE_RADIUS * (now < (character.bardZoneRadiusUntil || 0) ? 2 : 1);
+  ctx.save();
+  ctx.setLineDash([8, 6]);
+  ctx.strokeStyle = 'rgba(38, 166, 154, 0.5)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(character.x, character.y, radius, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
 // Choisit la pose (voir CLASS_SPRITES) selon la direction de déplacement en priorité
 // (character.isMoving, vers le prochain point du chemin), sinon la direction vers sa cible
 // d'attaque si elle est à portée (donc réellement en train de se battre), sinon la pose de face
@@ -6127,6 +6143,9 @@ function draw() {
     drawCombatBackground();
     for (const enemy of enemies) {
       if (enemy.flyingBombAttack) drawArtificierProximityZone(enemy);
+    }
+    for (const character of characters) {
+      if (character.selected && character.className === 'Barde') drawBardZonePreview(character, performance.now());
     }
     for (const bomb of activeBombs) drawBomb(bomb, performance.now());
     drawSeeds(performance.now());
